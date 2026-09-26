@@ -47,7 +47,7 @@ set -a; . ./.env; set +a
 docker build --progress=plain \
   --secret id=hf_token,env=HF_TOKEN \
   --build-arg CACHEBUST=$(date +%s) \
-  -t TostAI-Sprite-Sheet-Studio .
+  -t tostai-sprite-sheet-studio .
 ```
 
 - `HF_TOKEN` — the VRMBG-3.0 repo is gated; the model download 401s without it.
@@ -63,7 +63,7 @@ docker run -d --name TostAI-Sprite-Sheet-Studio \
   --gpus all \
   -p 8765:8765 \
   --restart unless-stopped \
-  TostAI-Sprite-Sheet-Studio
+  tostai-sprite-sheet-studio
 ```
 
 - `--gpus all` is **not optional** — without it `torch.cuda.is_available()` is
