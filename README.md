@@ -7,12 +7,6 @@
 
 https://github.com/user-attachments/assets/7aec9682-719a-45fd-842c-abe9877205ea
 
-Repo: <https://github.com/camenduru/TostAI-Sprite-Sheet-Studio> — **private**, so it
-returns 404 to anyone without access rather than being gone. Renamed from
-`Tost-Sprite-Studio` on 2026-09-25; GitHub redirects the old URL, but the
-Dockerfile and `app.py`'s `APP_REPO` now carry the new one. This is also
-`origin` in the local checkout.
-
 Two tools in one server:
 
 1. **Generator** — turn a raw video into a game-ready sprite sheet:
