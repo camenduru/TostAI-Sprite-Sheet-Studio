@@ -36,29 +36,21 @@ scripts.
 
 ### Docker
 
-The image is self-contained: it carries the model, the three pixel ops, and a
-supervisor that starts the Cloudflare tunnel and then hands PID 1 to the app.
+The image is self-contained: it carries the model and the three pixel ops.
 
-**Build.** The three tokens arrive as **secret mounts sourced from env vars** —
+**Build.** The one token arrives as a **secret mount sourced from env var** —
 never `--build-arg`, because a build-arg token is visible in
-`docker history --no-trunc`. They live in `.env`:
+`docker history --no-trunc`. It lives in `.env`:
 
 ```bash
 set -a; . ./.env; set +a
 docker build --progress=plain \
   --secret id=hf_token,env=HF_TOKEN \
-  --secret id=gh_token,env=GITHUB_TOKEN \
-  --secret id=cf_token,env=CLOUDFLARED_TOKEN \
   --build-arg CACHEBUST=$(date +%s) \
   -t TostAI-Sprite-Sheet-Studio .
 ```
 
 - `HF_TOKEN` — the VRMBG-3.0 repo is gated; the model download 401s without it.
-- `GITHUB_TOKEN` — the app repo is private, so an unauthenticated clone 404s.
-- `CLOUDFLARED_TOKEN` — the tunnel. It is **baked into the image**, readable at
-  `/etc/cloudflared/token` inside the container, so the image is not for public
-  distribution. Pass `-e CLOUDFLARED_TOKEN=...` at run time to override it without
-  rebuilding — that is how you rotate it.
 - `CACHEBUST` — the app clone is deliberately unpinned (always latest source), and
   a cached `git clone` silently re-serves the first snapshot. Bumping this forces
   a re-clone. **Omit it and you get stale code with no warning.** The commit that
@@ -78,27 +70,8 @@ docker run -d --name TostAI-Sprite-Sheet-Studio \
   `False` and matting falls back to CPU.
 - **http://127.0.0.1:8765** — the generator
 - **http://127.0.0.1:8765/editor** — the editor
-- The tunnel starts automatically and serves the public hostname
-  (`sprite.tost.ai`, from the tunnel's own remote-managed ingress).
-- With no token the app still starts — the tunnel is skipped and a loud multi-line
-  warning is logged. `-e SPRITE_NO_TUNNEL=1` skips the tunnel deliberately, even
-  when a token is present.
 
-**Check it actually came up.** `docker ps` reports *healthy* even when the tunnel
-is dead, because the healthcheck probes the app, not the tunnel — a wrong
-cloudflared invocation exits instantly and the supervisor restart-loops forever
-with the container still green. The tunnel's own readiness endpoint is the only
-honest signal:
-
-```bash
-docker exec TostAI-Sprite-Sheet-Studio sh -c 'curl -s http://127.0.0.1:20241/ready'
-# {"status":200,"readyConnections":4,"connectorId":"..."}
-```
-
-`readyConnections: 4` is a healthy connector (Cloudflare runs four). To read the
-connector's own log, `docker logs TostAI-Sprite-Sheet-Studio | grep 'Registered tunnel
-connection'`. **Never `pgrep -a cloudflared` or `ps aux`** — the token is in its
-argv and will be printed.
+**Check it actually came up.** The healthcheck probes the app:
 
 A from-scratch rebuild (`--no-cache`) re-downloads ~7.4 GB, including the 845 MB
 model.

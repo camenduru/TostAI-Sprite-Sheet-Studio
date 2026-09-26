@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.10
 #
-# 1.10, not 1.7: `env=` on a secret mount (used below to turn HF_TOKEN and
-# GITHUB_TOKEN into env vars for one RUN) is rejected by older frontends with
+# 1.10, not 1.7: `env=` on a secret mount (used below to turn HF_TOKEN
+# into an env var for one RUN) is rejected by older frontends with
 # "unexpected key 'env' in 'env=HF_TOKEN'". Verified against 1.7 before bumping.
 
 # ===========================================================================
@@ -25,8 +25,6 @@
 #
 #   docker build \
 #     --secret id=hf_token,env=HF_TOKEN \
-#     --secret id=gh_token,env=GITHUB_TOKEN \
-#     --secret id=cf_token,env=CLOUDFLARED_TOKEN \
 #     --build-arg CACHEBUST=$(date +%s) \
 #     -t TostAI-Sprite-Sheet-Studio .
 #
@@ -54,24 +52,21 @@
 # server. That path is a dev convenience -- the files it writes live in the
 # container and die with it. This build is the durable one.
 #
-# BOTH TOKENS COME FROM THE ENVIRONMENT. `--secret id=...,env=NAME` takes the
-# value out of the caller's environment, and `--mount=type=secret,...,env=NAME`
+# The one secret comes from the environment. `--secret id=...,env=NAME`
+# takes the value out of the caller's environment, and
+# `--mount=type=secret,...,env=NAME`
 # in the Dockerfile exposes it to that ONE RUN as $NAME. Nothing is written to
 # disk, nothing survives into the next layer, and nothing is recorded in the
 # image.
 #
-# Docker never forwards env vars into a build on its own -- the two --secret
-# flags above are what wire HF_TOKEN / GITHUB_TOKEN from your shell into the
-# build. Without them the build stops at "secret hf_token: not found".
+# Docker never forwards env vars into a build on its own -- the --secret
+# flag above is what wires HF_TOKEN from your shell into
+# the build. Without it the build stops at "secret hf_token: not found".
 #
-# TWO tokens, because two things are private: the model repo is gated, and
-# `camenduru/TostAI-Sprite-Sheet-Studio` -- the app's own repository -- is private too.
+# Only the model repo is private (gated): the app's own repository
+# `camenduru/TostAI-Sprite-Sheet-Studio` is public, so it clones with no token.
 # The app is CLONED from that repo rather than copied out of the build context,
 # so the image is reproducible from the repository alone.
-#
-# A THIRD secret, cf_token, is consumed by the cloudflared layer further down.
-# It is optional in the sense that you can drop that --secret flag only if you
-# also delete that layer -- the layer's `-z` guard fails the build without it.
 #
 # ---------------------------------------------------------------------------
 # THREE DEVIATIONS FROM THE PATTERN, each forced. Do not "fix" them.
@@ -142,91 +137,6 @@ RUN apt update -y && apt install -y \
     chown -R camenduru:camenduru /app /opt/models /opt/vendor /home && \
     chmod -R 777 /app /opt/models /opt/vendor /home && \
     rm -rf /var/lib/apt/lists/*
-
-# ---------------------------------------------------------------------------
-# cloudflared -- binary + `service install`, as asked. Read this before
-# "fixing" it: this layer deliberately REGISTERS the tunnel and does not start
-# it. Starting is a RUN-time job, done by docker-entrypoint.sh at the bottom.
-#
-# Asked for as:
-#     wget .../cloudflared-linux-amd64.deb && dpkg -i ... && \
-#     cloudflared service install ${CLOUDFLARED_TOKEN}
-#
-# All three steps are here, and the token comes from a SECRET MOUNT rather than
-# a plain build-arg, so `${CLOUDFLARED_TOKEN}` is expanded by the shell inside
-# this ONE RUN and never lands in `docker history` or `.Config.Env`. That part
-# is not cosmetic -- see the header note on HF_TOKEN; measured there, same
-# mechanism. To run it you need the third --secret on the build command:
-#
-#   --secret id=cf_token,env=CLOUDFLARED_TOKEN
-#
-# CAVEAT 1 -- THE UNIT INSTALLED HERE WILL NEVER RUN. `service install` writes a
-# systemd unit plus a token under /etc/cloudflared/. The docs' next step is
-# `systemctl start cloudflared`, which is meaningless here: there is no init in
-# this image, PID 1 is the app. Measured on the built image -- no unit was even
-# written, only the token. So this layer REGISTERS the tunnel; it does not
-# START it.
-#
-#      That is not a bug to fix at this line, because starting is not this
-#      layer's job. The connector is started at RUN time by
-#      docker-entrypoint.sh (bottom of this file), which supervises it and
-#      restarts it if it dies.
-#
-#      An earlier revision of this comment instead told you to run a SECOND
-#      container with `--network container:Tost-Sprite-Studio`. That is gone on
-#      purpose and must not come back: it addressed this container by NAME, the
-#      name later changed to `TostAI-Sprite-Sheet-Studio`, and so the command died
-#      with `no such object` -- which is exactly why the tunnel never started.
-#      A run-time step that depends on the container's name is a step that
-#      silently stops working.
-#
-#      Consequences, concretely:
-#        * The token written to /etc/cloudflared/ IS baked into the image, and
-#          is readable by anyone who can pull it. That is inherent to running
-#          `service install` at build time (cloudflared's own --help says the
-#          token "will be written to disk in the service configuration
-#          directory"). If this image is pushed to a registry, rotate the token
-#          or build it privately. Passing it as a secret only keeps it out of
-#          the *history*, not out of the filesystem.
-#        * That baked file is also what lets a bare `docker run` bring the tunnel
-#          up with no flags at all -- the entrypoint reads it. `-e
-#          CLOUDFLARED_TOKEN=...` overrides it at run time, so rotating the token
-#          does not require a rebuild.
-#
-#   2. IT RUNS AS ROOT, WHICH IS WHAT `service install` WANTS. This layer sits
-#      ABOVE `USER camenduru` (it is up here so one apt/dpkg transaction covers
-#      it), so no `sudo` is needed or used -- the install needs to write outside
-#      /home and root can. Do not "tidy" this by moving it below the USER line:
-#      it would then need sudo, and `sudo` inside a build is a tarpit.
-#
-# `|| true` is deliberate and is the one soft failure here: if cloudflared
-# refuses to install without a real systemd (its Linux install path checks for
-# one), the build should still succeed -- the binary is installed and usable,
-# and the tunnel is run per caveat 1. The final `cloudflared --version` is the
-# proof that the part which matters landed.
-#
-# The .deb is removed in the same RUN (like the Rust toolchain above): its only
-# job is to drop /usr/bin/cloudflared, and a leftover .deb is dead weight.
-#
-# DO NOT EDIT THE `echo` STRING IN THE RUN BELOW, however stale it now reads. It
-# still says "run the connector as a second container", which the entrypoint has
-# since superseded -- but changing ANY character of that RUN changes its cache
-# key and invalidates every layer after it: pip, torch, the Rust toolchain and
-# the 845 MB model download. The string is a fallback that only prints when
-# `service install` exits non-zero, so it is cosmetic; the rebuild it would cost
-# is not. The comments around it are free to change -- measured: comments are not
-# part of the cache key, only instructions are.
-# ---------------------------------------------------------------------------
-RUN --mount=type=secret,id=cf_token,env=CLOUDFLARED_TOKEN \
-    set -eu; \
-    if [ -z "${CLOUDFLARED_TOKEN:-}" ]; then echo "CLOUDFLARED_TOKEN is empty" >&2; exit 1; fi; \
-    wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb \
-      -O /tmp/cloudflared.deb; \
-    dpkg -i /tmp/cloudflared.deb; \
-    rm -f /tmp/cloudflared.deb; \
-    cloudflared service install "${CLOUDFLARED_TOKEN}" || \
-        echo "cloudflared service install did not complete (no systemd in this image) -- binary is installed; run the connector as a second container" >&2; \
-    cloudflared --version
 
 USER camenduru
 
@@ -388,8 +298,8 @@ ARG VRMBG_REV=59716e19a6cc97f91311edea190938219c097b76
 #   * it does NOT fire when the flag IS passed but HF_TOKEN is unset or empty.
 #     BuildKit hands the RUN an empty value and the build would sail on into an
 #     unauthenticated download; the -z check below is the only thing that stops
-#     it. Verified with --no-cache on the GITHUB_TOKEN mount below (same
-#     mechanism, same result): unset token -> "GITHUB_TOKEN is empty", exit 1.
+#     it. Verified with --no-cache on this same mount (same
+#     mechanism): unset token -> "HF_TOKEN is empty", exit 1.
 # Delete either guard and you lose a real failure mode.
 #
 # A third case worth knowing: BuildKit resolves secrets AFTER the cache lookup,
@@ -441,24 +351,19 @@ ENV SPRITE_MODEL_DIR=/opt/models/VRMBG-3.0 \
     TRANSFORMERS_OFFLINE=1
 
 # ---------------------------------------------------------------------------
-# The app -- cloned from its own repository
+# The app -- cloned from its own repository (public, no token needed)
 #
-# The repo is PRIVATE, so this needs a token. The token goes into the clone URL,
-# which means git writes it into /app/sprite_studio/.git/config -- so `.git` is
-# deleted immediately afterwards. Leave it in and the credential is readable by
-# anyone who pulls the image.
+# Plain `git clone` of the public repo. No token in the URL, so there is no
+# credential to scrub afterwards (the `.git` removal below stays: the image
+# does not need the history).
 #
-# The URL form matters: GitHub accepts `x-access-token:<token>@github.com` for
-# both classic PATs and `gh` OAuth tokens. Verified against this repo before
-# writing it. What lands in the image is the default branch's HEAD *as of the
+# What lands in the image is the default branch's HEAD *as of the
 # build* -- which only holds if CACHEBUST was passed, per the header. The
 # resolved commit is written to .sprite_rev so the running app can report what
 # it is rather than guessing.
 #
-# GITHUB_TOKEN comes from the caller's environment, same mechanism as HF_TOKEN:
-# `--secret id=gh_token,env=GITHUB_TOKEN` on the build command, `env=GITHUB_TOKEN`
-# on the mount. A build-arg would leave the token readable in `docker history`
-# for the lifetime of the image -- measured, not assumed (see the header note).
+# GITHUB_TOKEN used to be consumed here when the repo was private, same
+# mechanism as HF_TOKEN. Not needed anymore -- public clone below.
 #
 # `docker_selfcheck.py` is copied from the build context rather than cloned,
 # because it is newer than anything committed to the repo. So the context needs
@@ -493,11 +398,9 @@ ENV SPRITE_MODEL_DIR=/opt/models/VRMBG-3.0 \
 # The resolved commit is recorded in .sprite_rev so the running app can report
 # what it is (GET /api/update) instead of guessing.
 ARG CACHEBUST=0
-RUN --mount=type=secret,id=gh_token,env=GITHUB_TOKEN,required=true \
-    set -eu; \
-    if [ -z "${GITHUB_TOKEN:-}" ]; then echo "GITHUB_TOKEN is empty" >&2; exit 1; fi; \
+RUN set -eu; \
     git clone --depth 1 \
-      "https://x-access-token:${GITHUB_TOKEN}@github.com/camenduru/TostAI-Sprite-Sheet-Studio.git" \
+      "https://github.com/camenduru/TostAI-Sprite-Sheet-Studio.git" \
       /app/sprite_studio; \
     git -C /app/sprite_studio rev-parse HEAD > /app/sprite_studio/.sprite_rev; \
     rm -rf /app/sprite_studio/.git; \
@@ -528,213 +431,6 @@ RUN mkdir -p /app/walk /app/sprites /app/sprite_studio/runs /app/sprite_studio/u
 # ---------------------------------------------------------------------------
 RUN python /app/sprite_studio/docker_selfcheck.py
 
-# ---------------------------------------------------------------------------
-# The tunnel token, made readable by the user the app runs as
-#
-# `service install` above wrote /etc/cloudflared/token as root:root 0600, but the
-# container runs as camenduru (uid 1000) from the USER line further up -- so the
-# entrypoint, which runs as camenduru, cannot read it, and the tunnel would die
-# on a permission error that reads like an invalid token.
-#
-# This is done HERE, at the bottom, rather than up at the cloudflared layer, and
-# that placement is deliberate: touching that layer's instruction would
-# invalidate every layer after it -- pip, torch, the Rust toolchain, the 845 MB
-# model download -- turning a chown into a multi-GB rebuild. Down here it is one
-# metadata-only layer.
-#
-# Ownership rather than mode 0644: camenduru is the only user that exists, so
-# this grants nothing to anyone who could not already read the token out of the
-# image layer it is baked into. It only stops the app's own user from being the
-# one principal that cannot read it.
-# ---------------------------------------------------------------------------
-USER root
-RUN chown camenduru:camenduru /etc/cloudflared/token
-USER camenduru
-
-# ---------------------------------------------------------------------------
-# The entrypoint -- what actually starts the Cloudflare tunnel
-#
-# Without this, nothing ever runs the connector. `service install` above only
-# wrote a systemd unit for an init this image does not have, so the tunnel
-# registered and never started. The script below carries the full reasoning and
-# states exactly what it does and does not guarantee; the cloudflared comment
-# block above explains why the second-container workaround it replaces is not
-# coming back.
-#
-# THE SCRIPT IS GENERATED HERE, NOT COPIED FROM THE BUILD CONTEXT. There is no
-# docker-entrypoint.sh in the repo and .dockerignore does not mention one.
-#
-# The heredoc delimiter is QUOTED -- <<'ENTRYPOINT_EOF' -- and that is
-# load-bearing, not style. An unquoted delimiter lets Docker expand $@, $TOKEN
-# and $((...)) at BUILD time, baking an empty and silently broken script into the
-# image. Measured, not assumed: both forms were built and diffed against the
-# source. Do not "tidy" the quotes away.
-#
-# --chmod=0755 is load-bearing too. Without it COPY lands 0644 and the container
-# dies with "permission denied" trying to exec its own entrypoint.
-#
-# _probe_entrypoint.sh EXTRACTS THIS HEREDOC from this file and runs it, so the
-# harness still exercises the real artifact rather than a copy. Edit the script
-# below and the harness follows automatically; break the delimiter and the
-# harness fails on extraction instead of passing vacuously.
-#
-# Known cost of inlining: this 150-line block gets no syntax highlighting and no
-# shellcheck in place. Extract it to a real file when you need to work on it --
-# _probe_entrypoint.sh already does exactly that into /tmp/docker-entrypoint.sh.
-# ---------------------------------------------------------------------------
-COPY --chmod=0755 <<'ENTRYPOINT_EOF' /usr/local/bin/docker-entrypoint.sh
-#!/bin/sh
-# =============================================================================
-# Sprite Studio entrypoint -- starts the Cloudflare tunnel, then hands PID 1 to
-# the app.
-#
-# WHY THIS EXISTS, and why it is BACK after being deleted:
-#   `cloudflared service install` runs at BUILD time. It REGISTERS the tunnel --
-#   it writes a systemd unit and a token under /etc/cloudflared/ -- and that is
-#   all it can do, because there is no init in this image for the unit to run
-#   under. The tunnel therefore never came up on its own, and the documented
-#   workaround was a second container sharing this container's network
-#   namespace.
-#
-#   That workaround was fragile in two ways that both bit:
-#     1. It addressed this container BY NAME (`--network container:<name>`), so
-#        renaming the container silently broke the command. It did: the
-#        documented command still says `Tost-Sprite-Studio`, and the container is
-#        now `TostAI-Sprite-Sheet-Studio`, so it dies with `no such object`.
-#     2. It had to be started by hand, so it was simply never started.
-#
-#   Starting the connector INSIDE this container removes both: no manual step,
-#   and nothing to keep in sync with the container's name.
-#
-#   A docker-entrypoint.sh was written once before and deleted on request
-#   ("we dont need docker-entrypoint.sh"). That request predates the requirement
-#   that the tunnel start automatically. This script is what makes that
-#   requirement satisfiable; the earlier deletion is deliberately reversed.
-#
-# WHAT THIS GUARANTEES -- read this before trusting it:
-#   * cloudflared is started BEFORE the app, and RESTARTED whenever it exits, so
-#     a transient edge or network failure cannot leave the container running
-#     silently tunnel-less. Backoff is 5s doubling to 60s, reset after any run of
-#     >= 60s so a long-lived connector does not inherit a long delay.
-#   * If no token can be found, the app starts WITHOUT a tunnel and says so
-#     loudly. This was a hard `exit 1` until 2026-09-26, on the reasoning that a
-#     container reporting healthy while serving nothing is the exact failure
-#     being replaced. That reasoning was overruled on request ("if there is no
-#     cloudflared token ignore the run"), so the mitigation moved from
-#     "impossible" to "loud": the banner must stay unmissable, because the
-#     HEALTHCHECK and `docker ps` cannot tell the two cases apart.
-#   * It does NOT guarantee the tunnel CONNECTS. Whether Cloudflare accepts the
-#     token, and whether the edge is reachable, is not knowable at build time.
-#     The proof is cloudflared's own log line ("Registered tunnel connection"),
-#     not this script exiting 0. Do not read a running container as proof.
-#
-# TOKEN RESOLUTION -- environment first, then the token baked into the image:
-#   1. $CLOUDFLARED_TOKEN, if set. Pass `-e CLOUDFLARED_TOKEN` to override the
-#      baked token -- e.g. after rotating it -- WITHOUT rebuilding the image.
-#   2. /etc/cloudflared/token, written at build time by `cloudflared service
-#      install` from the cf_token secret mount. The Dockerfile chowns this to
-#      camenduru, the non-root user the app runs as, so this script can read it.
-#      This is what lets a bare `docker run` (no -e at all) still bring up the
-#      tunnel, which is the whole point of the fallback.
-#
-# ESCAPE HATCH: SPRITE_NO_TUNNEL=1 starts the app alone without even looking for
-# a token. Since a missing token is no longer fatal, this is now only useful when
-# a token IS present and you want to suppress the tunnel anyway.
-# =============================================================================
-set -eu
-
-log() { printf '[entrypoint] %s\n' "$*" >&2; }
-
-# `tr -d '\r\n'` because the file is written by an installer, not by us: a
-# trailing newline (or a CRLF, if it were ever copied from the Windows host)
-# would be pasted into the token and produce an authentication failure that
-# looks exactly like a bad token. Cheaper to strip than to debug.
-TOKEN="${CLOUDFLARED_TOKEN:-}"
-if [ -z "$TOKEN" ] && [ -r /etc/cloudflared/token ]; then
-    TOKEN="$(tr -d '\r\n' < /etc/cloudflared/token)"
-fi
-
-if [ "${SPRITE_NO_TUNNEL:-0}" = "1" ]; then
-    log "SPRITE_NO_TUNNEL=1 -- cloudflared NOT started, app only"
-    exec "$@"
-fi
-
-# NO TOKEN IS NOT FATAL. Changed 2026-09-26 on request ("if there is no
-# cloudflared token ignore the run"). The app starts and the tunnel is skipped.
-# The banner is deliberately loud and multi-line: `docker ps` reports healthy
-# either way, because the HEALTHCHECK only probes the app, so this log block is
-# the ONLY signal that this container is running tunnel-less.
-if [ -z "$TOKEN" ]; then
-    log "====================================================================="
-    log " WARNING: no Cloudflare tunnel token found."
-    log " cloudflared will NOT be started -- the app runs WITHOUT a tunnel."
-    log "====================================================================="
-    log " To enable the tunnel, restart with:"
-    log "   -e CLOUDFLARED_TOKEN=<token>        (no rebuild needed)"
-    log " or bake the token at build time with:"
-    log "   --secret id=cf_token,env=CLOUDFLARED_TOKEN"
-    exec "$@"
-fi
-
-# ---------------------------------------------------------------------------
-# The supervisor.
-#
-# --no-autoupdate: cloudflared's self-update rewrites its own binary in place,
-#   which inside a container means mutating a read-only-by-intent image layer.
-#   The version is pinned by the build instead.
-#
-# --metrics 127.0.0.1:20241: pins the metrics/readiness port. Left unset,
-#   cloudflared probes 20241..20245 and falls back to a RANDOM port when they are
-#   taken, which makes the endpoint unaddressable by any check. Pinned, it is
-#   always at the same place and a clash is a visible failure rather than a
-#   silent relocation.
-#
-# FLAG ORDER IS LOAD-BEARING, AND IT BIT. `cloudflared tunnel` takes tunnel-level
-#   options BEFORE the `run` subcommand and run-level options AFTER it, and it
-#   rejects the wrong side outright:
-#       cloudflared tunnel --no-autoupdate run --metrics 127.0.0.1:20241
-#       -> Incorrect Usage: flag provided but not defined: -metrics
-#   --metrics is a TUNNEL option, so it goes before `run`; --token is a run
-#   subcommand option, so it stays after. This is not a soft failure: cloudflared
-#   exits immediately, the supervisor restart-loops every 5s forever, and the
-#   container still reports healthy with no tunnel at all. Both orders were
-#   measured in the running container. The harness now pins the exact argv.
-#
-# The token goes in argv (`--token "$TOKEN"`) rather than an environment
-# variable ON PURPOSE: this is the form Cloudflare's own Docker documentation
-# uses, so it is certain to work against cloudflared 2026.9.3 -- and an env var
-# binding for it is not something this session verified. The exposure is limited
-# to this container's own process table, and the token is already readable at
-# /etc/cloudflared/token inside the same container, so argv discloses nothing
-# that was not already available to anyone who can run `ps` in here.
-#
-# Run in a subshell, in the background, so `exec "$@"` below can still make the
-# app PID 1 -- that is what keeps `docker stop`, the HEALTHCHECK and the log
-# stream working the way they are supposed to. When PID 1 exits the kernel tears
-# down the whole PID namespace, so the connector goes with it; no trap needed.
-# ---------------------------------------------------------------------------
-(
-    delay=5
-    while :; do
-        started=$(date +%s)
-        cloudflared tunnel --no-autoupdate --metrics 127.0.0.1:20241 run \
-            --token "$TOKEN" || true
-        stopped=$(date +%s)
-        if [ $((stopped - started)) -ge 60 ]; then
-            delay=5
-        fi
-        log "cloudflared exited; restarting in ${delay}s"
-        sleep "$delay"
-        if [ "$delay" -lt 60 ]; then
-            delay=$((delay * 2))
-        fi
-    done
-) &
-
-log "cloudflared starting under supervision; handing off to: $*"
-exec "$@"
-ENTRYPOINT_EOF
-
 # Must come after the clone: `CMD python app.py` is relative to this directory,
 # and without it the container starts in /app and dies looking for /app/app.py.
 WORKDIR /app/sprite_studio
@@ -743,15 +439,6 @@ EXPOSE 8765
 
 # --host 0.0.0.0 because app.py defaults to 127.0.0.1, which inside a container
 # is only reachable from inside the container.
-#
-# ENTRYPOINT + CMD rather than a bare CMD: the entrypoint starts and supervises
-# cloudflared, then `exec "$@"` replaces itself with this CMD, so the app ends up
-# as PID 1 and `docker stop`, the HEALTHCHECK and the log stream all keep working
-# normally. To run something else instead of the app:
-#     docker run <image> <command>
-# To run the app with no tunnel at all (debugging):
-#     docker run -e SPRITE_NO_TUNNEL=1 <image>
-ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["python", "app.py", "--host", "0.0.0.0", "--port", "8765"]
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \

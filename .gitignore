@@ -82,9 +82,9 @@ desktop.ini
 # ---------------------------------------------------------------------------
 # secrets / credentials
 # ---------------------------------------------------------------------------
-# `.env` holds HF_TOKEN and GITHUB_TOKEN, which the Docker build consumes via
-# `--secret id=...,env=...`. Both are read-only tokens, but they still unlock a
-# private repo and a gated model -- never commit them.
+# `.env` holds HF_TOKEN, which the Docker build consumes
+# via `--secret id=...,env=...`. HF_TOKEN unlocks the gated model repo --
+# never commit it.
 #
 # Note `.env` is a FILE. The `env/` and `ENV/` entries above are virtualenv
 # DIRECTORY patterns and do not match it, which is why this entry exists.

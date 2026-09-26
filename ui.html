@@ -713,11 +713,9 @@ function esc(s){ return String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;
 // -- it costs nothing idle and is what a "previous runs" list would re-attach to.
 
 // ---------------------------------------------------------------- update
-// Pulls the latest source out of this app's own repository, then restarts the
-// server so the new Python is actually loaded. The token is asked for per
-// update rather than configured: the build's GITHUB_TOKEN is a secret mount and
-// is deliberately absent from the image, and a PAT baked into an image is a PAT
-// that anyone who pulls the image can read.
+// Pulls the latest source out of this app's own public repository, then
+// restarts the server so the new Python is actually loaded. No token needed;
+// the field below is optional and only raises GitHub's API rate limit.
 const UPD_TOKEN_KEY = "sprite.gh_token";
 function updMsg(html){ $("updmsg").innerHTML = html; }
 
@@ -760,7 +758,7 @@ async function updWaitForRev(rev){
 
 async function updGo(){
   const token = $("updtok").value.trim();
-  if (!token){ updMsg('<div class="err">Enter a GitHub token.</div>'); return; }
+  // Token is optional now (public repo). Still honours the remember box.
   try {
     if ($("updsave").checked) localStorage.setItem(UPD_TOKEN_KEY, token);
     else localStorage.removeItem(UPD_TOKEN_KEY);
@@ -801,7 +799,7 @@ async function updGo(){
          ' files). Restarting…</div>');
   if (!await updWaitForRev(d.rev)){
     updMsg('<div class="err">The server did not come back on the new revision.\n' +
-           'Check it with:  docker logs sprite-studio</div>');
+           'Check it with:  docker logs TostAI-Sprite-Sheet-Studio</div>');
     $("updgo").disabled = false; return;
   }
   location.reload();
@@ -830,18 +828,18 @@ else
   updWire();          // script deferred or already parsed
 </script>
 
-<!-- Update dialog. The token field is the only input: the repository is private
-     and the build-time token is a secret mount that is deliberately not in the
-     image, so there is nothing here to pre-fill it from. -->
+<!-- Update dialog. The repo is public so no token is needed; the optional
+     field below only raises GitHub's rate limit. -->
 <div id="updwrap" class="ovl" hidden>
   <div class="dlg" role="dialog" aria-modal="true" aria-labelledby="updh">
     <h3 id="updh">Update studio</h3>
     <div class="hint" id="updrev"></div>
-    <label for="updtok">GitHub token</label>
+    <label for="updtok">GitHub token (optional)</label>
     <input type="password" id="updtok" autocomplete="off" spellcheck="false"
-           placeholder="ghp_&hellip; or github_pat_&hellip;">
-    <div class="hint">Needs read access to the source repository. Sent once to
-      this server, used for the fetch, and never written to disk.</div>
+           placeholder="leave empty — only needed for rate limits">
+    <div class="hint">Public repo: update works with no token. A token only
+      raises the API limit. Sent once to this server, used for the fetch,
+      and never written to disk.</div>
     <label class="chk"><input type="checkbox" id="updsave">
       Remember it in this browser</label>
     <div id="updmsg"></div>
