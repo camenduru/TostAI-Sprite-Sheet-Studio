@@ -5,6 +5,8 @@
 
 #### 🍞 Tost AI - Sprite Sheet Studio
 
+https://github.com/user-attachments/assets/7aec9682-719a-45fd-842c-abe9877205ea
+
 Repo: <https://github.com/camenduru/TostAI-Sprite-Sheet-Studio> — **private**, so it
 returns 404 to anyone without access rather than being gone. Renamed from
 `Tost-Sprite-Studio` on 2026-09-25; GitHub redirects the old URL, but the
