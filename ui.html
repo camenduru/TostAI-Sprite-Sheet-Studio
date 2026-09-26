@@ -792,7 +792,7 @@ async function updGo(){
          ' files). Restarting…</div>');
   if (!await updWaitForRev(d.rev)){
     updMsg('<div class="err">The server did not come back on the new revision.\n' +
-           'Check it with:  docker logs TostAI-Sprite-Sheet-Studio</div>');
+           'Check it with:  docker logs tostai-sprite-sheet-studio</div>');
     $("updgo").disabled = false; return;
   }
   location.reload();

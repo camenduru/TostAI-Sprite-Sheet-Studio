@@ -26,7 +26,7 @@
 #   docker build \
 #     --secret id=hf_token,env=HF_TOKEN \
 #     --build-arg CACHEBUST=$(date +%s) \
-#     -t tostai-sprite-sheet-studio .
+#     -t camenduru/tostai-sprite-sheet-studio .
 #
 # Docker itself reads neither `.env` nor your OS environment: the `env=NAME` on
 # each `--secret` is what lifts the value out of the process environment the
@@ -45,7 +45,7 @@
 # apt, pip and model layers stay cached, so a rebuild costs about 15 seconds.
 #
 # Rule of thumb: if the image id does not change after a rebuild, NOTHING was
-# rebuilt. Confirm with `docker image ls --no-trunc tostai-sprite-sheet-studio`.
+# rebuilt. Confirm with `docker image ls --no-trunc camenduru/tostai-sprite-sheet-studio`.
 #
 # A RUNNING CONTAINER CAN ALSO UPDATE ITSELF, with no rebuild: the studio's
 # Update button (POST /api/update) fetches the latest source and re-execs the
@@ -391,8 +391,8 @@ ENV SPRITE_MODEL_DIR=/opt/models/VRMBG-3.0 \
 # tell is unchanged, and worth repeating: if the image id does not move, nothing
 # was rebuilt. Check what actually landed with:
 #
-#   docker image ls --no-trunc tostai-sprite-sheet-studio
-#   docker run --rm --entrypoint sh tostai-sprite-sheet-studio -c \
+#   docker image ls --no-trunc camenduru/tostai-sprite-sheet-studio
+#   docker run --rm --entrypoint sh camenduru/tostai-sprite-sheet-studio -c \
 #     'sed -n "/function editLink/,/^}/p" /app/sprite_studio/ui.html'
 #
 # The resolved commit is recorded in .sprite_rev so the running app can report

@@ -38,6 +38,27 @@ scripts.
 
 The image is self-contained: it carries the model and the three pixel ops.
 
+1.  **Install Docker**\
+    [Download Docker Desktop (Windows AMD64)](https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe)
+    and run it.
+
+2.  **Update the container (optional)**
+
+    ```bash
+    docker stop tostai-sprite-sheet-studio; docker rm tostai-sprite-sheet-studio; docker pull camenduru/tostai-sprite-sheet-studio
+    ```
+
+3.  **Run the container**
+
+    ```bash
+    docker run -d --name tostai-sprite-sheet-studio --gpus all -p 8765:8765 --restart unless-stopped camenduru/tostai-sprite-sheet-studio
+    ```
+
+    *Requires NVIDIA GPU (Min 24GB VRAM)*
+
+4.  **Open app**\
+    Go to: http://localhost:8765 (generator) or http://localhost:8765/editor (editor)
+
 **Build.** The one token arrives as a **secret mount sourced from env var** —
 never `--build-arg`, because a build-arg token is visible in
 `docker history --no-trunc`. It lives in `.env`:
@@ -47,7 +68,7 @@ set -a; . ./.env; set +a
 docker build --progress=plain \
   --secret id=hf_token,env=HF_TOKEN \
   --build-arg CACHEBUST=$(date +%s) \
-  -t tostai-sprite-sheet-studio .
+  -t camenduru/tostai-sprite-sheet-studio .
 ```
 
 - `HF_TOKEN` — the VRMBG-3.0 repo is gated; the model download 401s without it.
@@ -59,11 +80,11 @@ docker build --progress=plain \
 **Run:**
 
 ```bash
-docker run -d --name TostAI-Sprite-Sheet-Studio \
+docker run -d --name tostai-sprite-sheet-studio \
   --gpus all \
   -p 8765:8765 \
   --restart unless-stopped \
-  tostai-sprite-sheet-studio
+  camenduru/tostai-sprite-sheet-studio
 ```
 
 - `--gpus all` is **not optional** — without it `torch.cuda.is_available()` is
