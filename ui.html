@@ -725,7 +725,16 @@ function updOpen(){
     $("updrev").textContent = d.rev
       ? "installed " + d.short + (d.subject ? " — " + d.subject : "")
       : "installed revision unknown (this image carries no .sprite_rev)";
-  }).catch(()=>{ $("updrev").textContent = ""; });
+    // Source repo, so the dialog names where the update comes from.
+    // esc() covers &<>, the extra replace closes the quote-breakout for href.
+    if (d.repo){
+      const rs = esc(d.repo).replace(/"/g, "%22");
+      $("updrepo").innerHTML = 'source: <a href="https://github.com/' + rs +
+        '" target="_blank" rel="noopener">' + rs + '</a>';
+    } else {
+      $("updrepo").textContent = "";
+    }
+  }).catch(()=>{ $("updrev").textContent = ""; $("updrepo").textContent = ""; });
   $("updwrap").hidden = false;
 }
 function updClose(){ $("updwrap").hidden = true; }
@@ -817,6 +826,7 @@ else
   <div class="dlg" role="dialog" aria-modal="true" aria-labelledby="updh">
     <h3 id="updh">Update studio</h3>
     <div class="hint" id="updrev"></div>
+    <div class="hint" id="updrepo"></div>
     <div id="updmsg"></div>
     <div class="row">
       <button id="updcancel">Cancel</button>
