@@ -1,0 +1,22 @@
+# ---------------------------------------------------------------------------
+# Build context
+# ---------------------------------------------------------------------------
+# The ONLY thing this Dockerfile reads from the build context is
+# docker_selfcheck.py -- the single `COPY` at the bottom. The app itself is
+# cloned from GitHub and every dependency is fetched over the network, so
+# nothing else needs to be sent.
+#
+# The container entrypoint is deliberately NOT a context file: it is generated
+# inside the Dockerfile from a quoted heredoc, so there is nothing here to
+# re-admit for it. Do not add a `!docker-entrypoint.sh` line -- there is no such
+# file in the repo, and a whitelist entry for a missing file is a silent no-op
+# that looks like it does something.
+#
+# Without this file the context is ~14 GB (`runs/` alone), which BuildKit has to
+# hash and transfer on every single build. It also means `.env` -- which holds
+# HF_TOKEN, GITHUB_TOKEN and CLOUDFLARED_TOKEN -- gets uploaded to whatever
+# builder is in use.
+#
+# So: ignore everything, then re-admit the one file that is actually used.
+*
+!docker_selfcheck.py

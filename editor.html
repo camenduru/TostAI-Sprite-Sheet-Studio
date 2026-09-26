@@ -1,0 +1,4032 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="/favicon.ico" sizes="any">
+<title>Tost AI Sprite Studio &middot; Editor</title>
+<script>
+// Set before the first paint, or a dark page flashes the light palette and then
+// repaints. Shared key with the generator, so switching in one page is still
+// switched in the other; no stored choice follows the OS.
+(function(){
+  var t = null;
+  try { t = localStorage.getItem("sprite.theme"); } catch(e){}
+  if (t !== "light" && t !== "dark")
+    t = window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches
+      ? "dark" : "light";
+  document.documentElement.dataset.theme = t;
+})();
+</script>
+<style>
+  :root{
+    /* TostUI's palette (TostUI/app/globals.css), mapped onto this editor's
+       roles. Values taken verbatim are named as such; the rest are further
+       steps of the same Tailwind scales TostUI draws on, because this page has
+       roles TostUI does not (a faint border, a recessed surface, success) and
+       because a colour that is fine as a button fill is often not fine as 11px
+       text -- TostUI's own --primary under its white foreground is 3.68:1,
+       which the contrast rule below will not pass. */
+    --bg:#f9fafb; --panel:#fff; --panel2:#f9fafb; --bd:#e5e7eb; --bd2:#eef0f2;
+    --tx:#4b5563; --mut:#5b6472; --acc:#0e7490; --acc2:#ecfeff;
+    /* The accent as a FILL is its own pair. --acc is tuned to be read as text
+       (links, the active tool, a hot drop zone), and a fill with white on it
+       has the opposite requirement, so white-on-cyan and cyan-on-tint are set
+       separately rather than one accent being asked to do both. */
+    --accbg:#0e7490; --acctext:#fff; --acch:#155e75;
+    --ok:#15803d; --okbg:#f0fdf4; --bad:#be123c; --badbg:#fff1f2;
+    --warn:#c2410c; --warnbg:#fff7ed;
+    --stage:#f5f5f5; --hud:rgba(255,255,255,.92); --busy:rgba(249,250,251,.72);
+    color-scheme:light;
+  }
+  /* Dark theme. Same variable names, so nothing below has to know which one is
+     active. TostUI's dark block is near-black rather than #000 and its cards
+     sit a step above it, because a panel edge has to stay a visible edge -- and
+     the sheet's own checkerboard stays light in both themes, because it is the
+     artwork's backdrop, not the UI's. color-scheme hands the browser's own
+     parts -- scrollbars, spinners, checkbox and select chrome -- over to the
+     same decision. */
+  html[data-theme="dark"]{
+    --bg:#1a1a1a; --panel:#2d2d2d; --panel2:#242424; --bd:#4a4a4a; --bd2:#3f3f3f;
+    --tx:#e0e0e0; --mut:#b4b4b4; --acc:#22d3ee; --acc2:#123a42;
+    --accbg:#0891b2; --acctext:#1a1a1a; --acch:#22d3ee;
+    --ok:#4ade80; --okbg:#14301f; --bad:#f87171; --badbg:#3a1d1d;
+    --warn:#ffd700; --warnbg:#332c12;
+    --stage:#1a1a1a; --hud:rgba(45,45,45,.92); --busy:rgba(26,26,26,.72);
+    color-scheme:dark;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{margin:0;background:var(--bg);color:var(--tx);overflow:hidden;
+       font:13px/1.5 "Segoe UI",system-ui,-apple-system,sans-serif}
+  .app{display:grid;grid-template-rows:auto 1fr auto;height:100vh}
+
+  header{background:var(--panel);border-bottom:1px solid var(--bd);
+         padding:8px 14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  /* The TostUI mark. Inlined, because this page has no external
+     references at all and should keep rendering off disk. The alt is
+     empty on purpose: the h1 beside it already says the name, and a
+     second reading of it is noise on a screen reader. */
+  header img.logo{width:26px;height:26px;display:block;flex:none;
+                  align-self:center}
+  header h1{font-size:15px;margin:0 6px 0 0;font-weight:650;white-space:nowrap}
+  header .sep{width:1px;height:22px;background:var(--bd)}
+  header .sp{flex:1}
+  .docname{font-size:12.5px;color:var(--mut);max-width:340px;overflow:hidden;
+           text-overflow:ellipsis;white-space:nowrap}
+  .navlink{font-size:12.5px;color:var(--acc);text-decoration:none}
+  .navlink:hover{text-decoration:underline}
+  .chip{font-size:12.5px;color:var(--mut)}
+
+  .main{display:grid;grid-template-columns:288px 1fr 300px;overflow:hidden}
+  @media(max-width:1200px){.main{grid-template-columns:250px 1fr 250px}}
+  .col{overflow:auto;background:var(--panel);border-right:1px solid var(--bd);
+       padding:10px}
+  .col.right{border-right:none;border-left:1px solid var(--bd)}
+  .center{overflow:hidden;position:relative;background:var(--stage)}
+
+  .panel{border:1px solid var(--bd);border-radius:8px;margin-bottom:8px;overflow:hidden}
+  .panel>summary{cursor:pointer;padding:7px 10px;font-weight:600;font-size:12.5px;
+                 list-style:none;display:flex;justify-content:space-between;
+                 align-items:center;user-select:none;background:var(--panel2)}
+  .panel>summary::-webkit-details-marker{display:none}
+  .panel>summary:after{content:"+";color:var(--mut);font-weight:400}
+  .panel[open]>summary:after{content:"–"}
+  .panel>summary:hover{background:var(--bd2)}
+  .pbody{padding:8px 10px 10px;border-top:1px solid var(--bd2)}
+
+  label{display:block;font-size:11.5px;color:var(--mut);margin:7px 0 2px}
+  input[type=text],input[type=number],select{width:100%;padding:5px 7px;
+    border:1px solid var(--bd);border-radius:6px;font:inherit;
+    background:var(--panel);color:var(--tx)}
+  input[type=range]{width:100%;accent-color:var(--acc)}
+  input[type=color]{width:100%;height:28px;padding:1px;border:1px solid var(--bd);
+                    border-radius:6px;background:var(--panel)}
+  .row{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:7px}
+  button{font:inherit;font-size:12.5px;padding:5px 10px;border:1px solid var(--bd);
+         background:var(--panel);border-radius:6px;cursor:pointer;color:var(--tx)}
+  button:hover:not(:disabled){background:var(--bd2)}
+  button:disabled{opacity:.45;cursor:default}
+  button.primary{background:var(--accbg);border-color:var(--accbg);
+                 color:var(--acctext);font-weight:600}
+  button.primary:hover:not(:disabled){background:var(--acch);border-color:var(--acch)}
+  button.on{background:var(--acc2);border-color:var(--acc);color:var(--acc);font-weight:600}
+  button.sm{padding:3px 7px;font-size:11.5px}
+  .hint{font-size:11px;color:var(--mut);margin-top:4px;line-height:1.4}
+  .chk{display:flex;align-items:center;gap:6px;margin:6px 0;font-size:12.5px}
+  .chk input{accent-color:var(--acc)}
+
+  .opgroup{margin-bottom:6px}
+  .opgroup>summary{cursor:pointer;padding:5px 8px;font-weight:600;font-size:12px;
+                   background:var(--panel2);border:1px solid var(--bd2);border-radius:6px;
+                   list-style:none;display:flex;justify-content:space-between}
+  .opgroup>summary::-webkit-details-marker{display:none}
+  .opgroup>summary:after{content:"+";color:var(--mut);font-weight:400}
+  .opgroup[open]>summary:after{content:"–"}
+  .op{margin:6px 0 0}
+  .op>summary{cursor:pointer;padding:5px 8px;font-size:12px;border:1px solid var(--bd2);
+              border-radius:6px;list-style:none;display:flex;justify-content:space-between;
+              align-items:center;background:var(--panel)}
+  .op>summary::-webkit-details-marker{display:none}
+  .op>summary:after{content:"▸";color:var(--mut);font-size:10px}
+  .op[open]>summary:after{content:"▾"}
+  .op>summary:hover{background:var(--acc2)}
+  .opbody{padding:7px 8px 8px;border:1px solid var(--bd2);border-top:none;
+          border-radius:0 0 6px 6px;background:var(--panel2)}
+
+  /* Snap Pixels preview: the snapped frame is tiny (that is the point), so it
+     is shown at an integer zoom over a checkerboard, exactly like the tool's
+     own viewport. The wrapper scrolls rather than shrinking the pixels. */
+  .snapview{overflow:auto;max-height:300px;margin-top:6px;border:1px solid var(--bd2);
+            border-radius:6px;padding:4px;background:
+              linear-gradient(45deg,#e9e9e9 25%,transparent 25%,transparent 75%,#e9e9e9 75%),
+              linear-gradient(45deg,#e9e9e9 25%,#fff 25%,#fff 75%,#e9e9e9 75%);
+            background-size:16px 16px;background-position:0 0,8px 8px}
+  .snapview canvas{display:block;image-rendering:pixelated}
+  .snapbar{display:flex;align-items:center;gap:6px;margin-top:6px;font-size:11.5px;
+           color:var(--mut)}
+  .snapbar span{font-variant-numeric:tabular-nums}
+  .snapinfo{margin-top:4px;font-size:11.5px;color:var(--mut);
+            font-variant-numeric:tabular-nums}
+  /* Palette picker: a button that opens a popover. The popover is attached to
+     <body> and positioned fixed, not nested in the op, because the side column
+     scrolls and clips anything that overflows it. */
+  .palbtn{display:flex;align-items:center;gap:8px;width:100%;margin-top:2px;
+          padding:5px 7px;background:var(--panel2);border:1px solid var(--bd);
+          border-radius:6px;color:var(--tx);font:inherit;font-size:12px;
+          text-align:left;cursor:pointer}
+  .palbtn:hover:not(:disabled){background:var(--bd2)}
+  .palbtn canvas{border:1px solid var(--bd2);border-radius:2px;flex:none}
+  .palbtn .pname{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .palbtn .caret{color:var(--mut)}
+  .palpanel{position:fixed;z-index:60;max-height:340px;overflow:auto;padding:6px;
+            background:var(--panel);border:1px solid var(--bd);border-radius:8px;
+            box-shadow:0 10px 30px rgba(0,0,0,.35)}
+  .palrow{display:flex;align-items:center;gap:8px;padding:6px;margin-bottom:5px;
+          border:1px solid var(--bd2);border-radius:6px;background:var(--panel2);
+          font-size:12px;cursor:pointer}
+  .palrow:last-child{margin-bottom:0}
+  .palrow:hover,.palrow.active{border-color:var(--acc);background:var(--acc2)}
+  .palrow canvas{border:1px solid var(--bd2);border-radius:2px;flex:none}
+  .palrow .count{margin-left:auto;color:var(--mut);
+                 font-variant-numeric:tabular-nums}
+  .palimport{display:flex;align-items:center;gap:8px;padding:8px;
+             border:1px solid var(--bd2);border-radius:6px;background:var(--panel2);
+             font-size:12px;font-weight:600;cursor:pointer}
+  .palimport:hover{border-color:var(--acc);background:var(--acc2)}
+  .audiov{display:flex;flex-direction:column;gap:4px;margin-top:6px}
+  .audiorow{display:flex;align-items:center;gap:6px;padding:3px 6px;
+            border:1px solid var(--bd2);border-radius:6px;background:var(--panel2);
+            font-size:11.5px}
+  .audiorow .fr{color:var(--acc);flex:none;font-variant-numeric:tabular-nums}
+  .audiorow.here{border-color:var(--acc);background:var(--acc2)}
+  .audiorow .nm{flex:1;overflow:hidden;text-overflow:ellipsis;
+                white-space:nowrap;color:var(--mut)}
+  .audiorow button{padding:2px 7px}
+  /* The library rows are drag sources, and the drop targets light up while a
+     clip is over them -- a drop target that gives no feedback reads as "the drag
+     did not take", which is the same complaint as a dead label. */
+  .audiorow[draggable]{cursor:grab}
+  .audiorow.dragging{opacity:.45}
+  .audiorow.dropover{border-color:var(--acc);background:var(--acc2)}
+  /* The library row that is sounding. Deliberately not `.here`, which means "the
+     frame you are looking at has this clip" -- a row can be either, both or
+     neither, and one class for two meanings would make both unreadable. */
+  .audiorow.playing{border-color:var(--acc);background:var(--acc2);
+                    box-shadow:inset 0 0 0 1px var(--acc)}
+  canvas.dropover{outline:2px solid var(--acc);outline-offset:-2px}
+  /* An attached clip is its frame, its name, play and remove -- plus the volume
+     it will be saved at. The volume goes on its own line: the row is a narrow
+     column, and a slider squeezed between the name and the buttons is neither
+     readable nor draggable. */
+  .audioclip{display:flex;flex-direction:column;gap:2px}
+  .volrow{display:flex;align-items:center;gap:5px;padding:0 6px 3px 6px;
+          font-size:11px;color:var(--mut)}
+  .volrow input[type=range]{flex:1;min-width:0;height:14px;margin:0;
+                            accent-color:var(--acc)}
+  .volrow .volval{flex:none;font-variant-numeric:tabular-nums;color:var(--acc)}
+  /* The library list is the one list here that grows without bound -- a folder
+     can hold hundreds of clips -- so it scrolls inside a fixed height instead of
+     pushing the Audio panel off the bottom of the column. A plain max-height
+     rather than a fixed height, so a short folder still hugs its rows. */
+  .libscroll{max-height:190px;overflow-y:auto;overflow-x:hidden}
+
+  /* touch-action:none, or a touch/pen drag is claimed as a scroll gesture, the
+     browser fires pointercancel and the stroke is lost -- "pencil not working"
+     on a touchscreen. */
+  #view{display:block;width:100%;height:100%;cursor:crosshair;touch-action:none}
+  .hud{position:absolute;left:10px;bottom:10px;background:var(--hud);
+       border:1px solid var(--bd);border-radius:6px;padding:4px 9px;font-size:11.5px;
+       color:var(--mut);pointer-events:none;white-space:pre}
+  .hud2{position:absolute;right:10px;top:10px;display:flex;gap:6px}
+  .busy{position:absolute;inset:0;background:var(--busy);display:none;
+        align-items:center;justify-content:center;font-weight:600;color:var(--acc)}
+  .busy.on{display:flex}
+
+  canvas.prev{width:100%;background:var(--panel);border:1px solid var(--bd);border-radius:6px;
+              display:block;image-rendering:pixelated}
+  /* Big preview: a pop-out of the Playback canvas for when the panel version
+     is too small to judge motion on. Same frame, same onion ghosts, bigger --
+     with its own zoom so it never moves the panel canvas. Above the toast (50)
+     and the palette popover (60); the backdrop click and Escape both close. */
+  .bigback{position:fixed;inset:0;z-index:70;background:rgba(0,0,0,.55);
+           display:flex;align-items:center;justify-content:center;padding:4vmin}
+  .bigback[hidden]{display:none}
+  /* Fixed viewport size, deliberately: when the stage shrink-wrapped the
+     canvas, "fit" measured a box the canvas itself sized, so every frame
+     recomputed a slightly smaller zoom and Fit ratcheted down while playing.
+     A stable stage makes fit a fixed point instead of a feedback loop. */
+  .bigdlg{background:var(--panel);border:1px solid var(--bd);border-radius:10px;
+          width:92vw;height:92vh;display:flex;flex-direction:column;
+          box-shadow:0 18px 60px rgba(0,0,0,.5);padding:10px}
+  .bigbar{display:flex;align-items:center;gap:6px;margin-bottom:8px;font-size:12px;
+          color:var(--mut);flex-wrap:wrap}
+  .bigbar .zl{min-width:52px;text-align:center;font-variant-numeric:tabular-nums}
+  .bigbar .fr{font-variant-numeric:tabular-nums}
+  .bigbar .sp{flex:1}
+  .bigbar input[type=range]{flex:1;min-width:80px}
+  .bigview{overflow:auto;border:1px solid var(--bd2);
+          border-radius:6px;background:var(--panel2);display:flex;align-items:center;
+          justify-content:center;flex:1;min-width:0;min-height:0}
+  .bigview canvas{image-rendering:pixelated;display:block;flex:none}
+  .strip{display:flex;gap:3px;overflow-x:auto;padding:4px;border:1px solid var(--bd);
+         border-radius:6px;background:var(--panel);margin-top:6px;min-height:56px}
+  .strip canvas{flex:0 0 auto;border:1px solid transparent;border-radius:3px;
+                cursor:pointer;background:
+                  linear-gradient(45deg,#e9e9e9 25%,transparent 25%,transparent 75%,#e9e9e9 75%),
+                  linear-gradient(45deg,#e9e9e9 25%,#fff 25%,#fff 75%,#e9e9e9 75%);
+                background-size:10px 10px;background-position:0 0,5px 5px}
+  .strip canvas.sel{border-color:var(--acc);box-shadow:0 0 0 1px var(--acc)}
+  .strip canvas.cur{outline:2px solid #be123c;outline-offset:1px}
+
+  .kv{display:grid;grid-template-columns:auto 1fr;gap:1px 9px;font-size:11.5px}
+  .kv b{font-weight:600;color:var(--mut);white-space:nowrap}
+  .badge{display:inline-block;padding:1px 8px;border-radius:20px;font-size:11.5px;
+         font-weight:600}
+  .badge.ok{background:var(--okbg);color:var(--ok)}
+  .badge.bad{background:var(--badbg);color:var(--bad)}
+  .badge.warn{background:var(--warnbg);color:var(--warn)}
+  .badge.mut{background:var(--bd2);color:var(--mut)}
+  /* A stale server is invisible otherwise: it serves the old body of a route that
+     exists, so nothing 404s and the missing fix reads as a broken feature. ID
+     selectors because `.badge` sets `display:inline-block`, which would beat the
+     UA's `[hidden]` rule and leave a "hidden" badge on screen. */
+  #stale{display:none}
+  #stale.on{display:inline-block}
+  pre.log{background:var(--panel2);border:1px solid var(--bd2);border-radius:6px;padding:7px;
+          font:11px/1.45 ui-monospace,Consolas,monospace;max-height:180px;overflow:auto;
+          white-space:pre-wrap;margin:6px 0 0}
+  .err{background:var(--badbg);color:var(--bad);padding:7px 9px;border-radius:6px;
+       font-size:11.5px;margin-top:6px;white-space:pre-wrap}
+  .okbox{background:var(--okbg);color:var(--ok);padding:7px 9px;border-radius:6px;
+         font-size:11.5px;margin-top:6px;word-break:break-all}
+  .lib{max-height:230px;overflow:auto;font-size:11.5px}
+  .lib div{padding:4px 5px;border-bottom:1px solid var(--bd2);cursor:pointer;
+           display:flex;justify-content:space-between;gap:8px}
+  .lib div:hover{background:var(--acc2)}
+  .lib .n{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .lib .m{color:var(--mut);white-space:nowrap}
+  footer{background:var(--panel);border-top:1px solid var(--bd);padding:5px 12px;
+         display:flex;gap:10px;align-items:center;font-size:11.5px;color:var(--mut)}
+  footer .sp{flex:1}
+  .toast{position:fixed;left:50%;bottom:56px;transform:translateX(-50%);
+         background:var(--tx);color:var(--panel);padding:7px 14px;border-radius:7px;font-size:12.5px;
+         opacity:0;transition:opacity .18s;pointer-events:none;z-index:50;max-width:70vw}
+  .toast.on{opacity:.94}
+</style>
+</head>
+<body>
+<div class="app">
+
+<header>
+  <img class="logo" alt="" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAMAAACdt4HsAAAA/1BMVEXap29iTkZaRT2dYjrhyKlLNDByWk2RbVdyaGJILChoAQHkdWGsiWhTOza2oYk0GRiKdmjUrJOupI+Ui3VpRzf/AADFfT7Jgz5XUQ7l4K303MHOuKE/AAD//8y22rZRQDz45sQAAADMh0r12Kv347tGKCPZq3c1GBSpbULqxpZFJR2wdEVWNSrFfkI+Pj7SklP/8s7y0puJVjVVVVXrhW5cSUV/fwA8IyLjuYpKNDDUtI1vRjF0ZVZpOio7IRz///8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAkf/kmAAAAQHRSTlP+VVn9/Z/+/R7VAv78YP3uIP4PGf4B/v4SCf4MBAUHiv0A/f3++/79/P7++/79BP39/v4D/mgC9/6s/f4p/vkCkmhLWAAABYtJREFUeNqtlw17ojgQgMOHIFartW4/dvfugCQgyFbEKgiC//9f7UwAiWh7ffZuWlvMMG8yk8kkIc5/FCI9f9v+rB9Gb8PrN4dvzcPP7f4mYNsz2F6ge8rRvg8YwedRmQxQDhN1+Co6lVDzYaMcTNSZgMoAePNVPXCQsoyiiIfVdKAKRu3UTB1Mq5BHUYlKnh6QMeoAI+e0s3i00FaukNUyKXg6HRzFKycF0FGhrWrtSkuKKEz/eXReWsDIOVphobnuL7eTlVaGqTWYDA6IBtu1pHSXBbeUdgQvjsLDJbRqMgAZSRnBsBF9LUuequgFAf+HvBSma+JlQaAHmUc6yPkJlKANssyrxzIuKhWMYQSPvBTmGbXPQgOvGzLQvYwyWSnai2ro7IlzOnDsxkNzxigIY5cML5DQDUOMMbL+hhEoXIMXM7CmjWw2tO6PURgzFdaMMXaBAMLa5AoADhF2AlAhAdlcQgSHbgJsuCCgG9HBIbM0WbtrerYn5DwO7B3bgmDTtMmDoABI0iNR+XLt5o29DLgp7GIIa42rZIIhDFoA7XrrWbJ+HO3MXS9DlQz42HUbDzayAWP9jnuMALKET2QAIUF/qEBh3fNNgHBBADZkTdi1q7Iw+V8GyQ8xUDCIdQzEFDLUx7cIMfwIbQOAIOIszHmxhjSoO4aPTc3CuL9hnxsLI5dSCqextF6bRKqDgB7r0ZT70/GV/YPvR75/37ngYQh2IpUhk4ggMFCZ0zHNo0rvA6LwwX7gEZUTseSPjlhMMA+E2XWuLuCdeOyP40v/c9+MWWz4D20SwBJNuAr1AMqRWM4Qhg0CoojheK8B45jaZpWfp9DVwsOpLig7Xrh1NoJKx8FTnYqwt+FvW2jrGXl2V6E1q0vam6NME/fJE4D6V0TZMOH1OLZ102jXD/1eKykUgDI9YsEnWPZ3XBM+UDt7ByHire98yg3DNAw+jUTk6QMqRRAYVINlOKhr4smZiyCIZCJ38M5dJgCRX/kolV+IbvU7IbTJQrdIH8GYoAeYjCKXmOjkvR6n4fMU7NPUr12g70gnrPEB6tEEjHFfEKmk4zRCJum0rTyGn4ZWafEQZrAJQbdMsroeiRicLEhmwtjmchFBMpRizKV/H18lJiZyMcVp/AZlHVMR00AAzqtWr7R3sH8vOb2xLom7XkznANg7xxTKcnYNiE0fnTZbD+xeTV0n1cz5RrbOMDXbBc0uygZdWNqdNi2+2zcBblIdYWPZOioHgN4AqJdJjhqVXxn0Zm3JLwC4njcCELieHEk91z8oTrko6n2A2ETsL0mG9WjYAJYd4MsSdCNQ/gDABIAPJQDbfFKNPwIcJRdaAB3nH9tRkksArQFMJAC1dY1cb0JnxzVPikEH0BDQbG72Z36wTim5IEags815E/1SMGE5JqEECM6LldnsK7H0LkfwfD6iNPsO+xcKVsWEz7oRuDkTmxb7Uvd4yPp1BrxAEGFrWXtenudwQvFQcq+T3CO1ZOIrviIOf0mKy3kP58wEz5PPz09P2P70S5b2qPgkN7vPAlDweVPSxEHz5oH2M1nyuibuIZe5uVotV0KWS/gVn+VK/JUf6i/1e0nIh+1xX7F8HqL4jYQhh2sBrxvxQTyedaIxtYbdheOHoirKThn4Rn4PYviDHYqiqOquESVcoOre9A/iZXV4ki8ctcwrI8YCaqQ/ri9dh4jCISc2pjNHuia1d6btG4pz4Dpkos4Pp7eejJydj8cWnVt/iYbt9vraB5tcBacA2FEU563X/8l5rGCHi+/9XX3VuXVvhFhYkR7TiOOuee0Dz2OKc7//EDCCGY1MA45O1zKChIvMxZWO9L7DjFq7yz463cCHm9bocwDcIecfX5SHp0/vzu3UjD4wv6kj/+ft/Y8AvwEr/Bbwj7KsJgAAAABJRU5ErkJggg==">
+  <h1>Tost AI Sprite Studio</h1>
+  <span class="sep"></span>
+  <a class="navlink" href="/">&larr; generator</a>
+  <button id="theme" title="switch to the dark theme">Dark</button>
+  <span class="sep"></span>
+  <button id="undo" disabled title="Ctrl+Z">Undo</button>
+  <button id="redo" disabled title="Ctrl+Shift+Z">Redo</button>
+  <span class="sep"></span>
+  <button id="toolSelect" class="on" title="V">Select</button>
+  <button id="toolPan" title="H">Pan</button>
+  <button id="toolPencil" title="B">Pencil</button>
+  <button id="toolErase" title="E">Eraser</button>
+  <button id="toolPick" title="I">Picker</button>
+  <button id="toolBox" title="T — box: move, scale and rotate the art in a frame">Box</button>
+  <span class="row" style="gap:5px">
+    <input type="color" id="brushColor" value="#ffffff" style="width:38px;height:26px"
+           title="brush colour">
+    <input type="number" id="brushAlpha" value="255" min="0" max="255" style="width:60px"
+           title="brush alpha">
+    <input type="number" id="brushSize" value="6" min="1" max="200" style="width:56px"
+           title="brush size in screen pixels (so it means the same thing at any zoom)">
+  </span>
+  <span class="sep"></span>
+  <button id="copyFrame" title="Ctrl+C">Copy</button>
+  <button id="pasteFrame" title="Ctrl+V">Paste</button>
+  <button id="clearFrame" title="Delete">Clear</button>
+  <span class="sp"></span>
+  <span class="docname" id="docname">no sheet open</span>
+  <span class="sep"></span>
+  <button id="fit" title="0">Fit</button>
+  <button id="zoom100" title="1">100%</button>
+  <span class="sep"></span>
+  <button id="verify">Verify</button>
+  <button id="save" class="primary">Save&hellip;</button>
+</header>
+
+<div class="main">
+  <!-- ------------------------------------------------------------- left -->
+  <div class="col">
+    <details class="panel">
+      <summary>Open a sheet</summary>
+      <div class="pbody">
+        <!-- The "recent folders" list was removed on request: a run writes a new
+             folder every time, so the list filled up with folders that no longer
+             mattered. Opening is by path only now. `rememberFolder`/`renderRecent`
+             are deliberately kept (and still called) because the remembered
+             folder is what "come back to what I was doing" reopens after a
+             reload -- only the panel is gone, not the memory. The route behind
+             the old sheet-library list (/api/sheets) is still there too. -->
+        <label>sheet path</label>
+        <input type="text" id="sheetPath" placeholder="C:\...\thing_sheet.png">
+        <div class="row" style="margin-top:6px">
+          <button id="openPath">Open</button>
+        </div>
+        <div class="hint">The sidecar JSON next to the PNG supplies the grid, the
+          name and any sounds, so either path works: give the PNG and the sidecar
+          is found beside it, or give the sidecar and it names the sheet. A sheet
+          with no sidecar has no grid to read, and is refused rather than guessed
+          at.</div>
+      </div>
+    </details>
+
+    <!-- Folded by default: the palette is long, and the panel below it is the
+         one that gets used while a sheet is open. -->
+    <details class="panel">
+      <summary>Operations</summary>
+      <div class="pbody">
+        <div class="hint" id="selinfo" style="margin-bottom:6px">no sheet open</div>
+        <div id="ops"></div>
+      </div>
+    </details>
+
+    <!-- The Audio Library panel sits under Operations and above Audio: that is
+         the order it had before it was folded into the Audio panel, and "put
+         under audio librarry like back then" is this order. It reads top to
+         bottom -- the library feeds the attach controls below it.
+
+         Folded by default, the way it was: the folder is chosen once and then
+         the panel is in the way of the sheet, whereas the attach controls below
+         are used on every clip. "audio librarry default folded".
+
+         It was removed once, on the argument that Add sound is a file dialog and
+         needs no folder, and that turned out to be wrong for the way this is
+         actually used: reported back as "Audio Librarry disapeard". Picking the
+         hundredth clip out of a file dialog is the thing a folder listing
+         exists to avoid, so it is back and both ways in. -->
+    <details class="panel">
+      <summary>Audio Library</summary>
+      <div class="pbody">
+        <label>clip folder</label>
+        <div class="row">
+          <input type="text" id="libDir" style="flex:1"
+                 placeholder="folder of audio clips">
+          <button id="libGo" class="sm">List</button>
+        </div>
+        <div class="hint" id="libNote">list a folder, then drag a clip onto a
+          frame in the timeline or a cell on the sheet</div>
+        <div class="audiov libscroll" id="libRows"></div>
+      </div>
+    </details>
+
+    <!-- Audio: the attach controls, under the library that feeds them, and open
+         by default -- it is the one used while a sheet is open. -->
+    <details class="panel" open>
+      <summary>Audio</summary>
+      <div class="pbody">
+        <div class="hint">Attach a sound to a frame. On save the clips are
+          written beside the sheet under <code>audio/</code> and listed in the
+          sidecar JSON as <code>{"frame", "file", "name", "volume"}</code>, so
+          an engine plays the right one per frame.</div>
+
+        <div class="row" style="margin-top:7px">
+          <button id="audioAdd" class="sm">Add sound&hellip;</button>
+          <label class="chk" style="margin:0"><input type="checkbox" id="audioPlay"
+            checked><span>play with preview</span></label>
+        </div>
+        <input type="file" id="audioFile" accept="audio/*" multiple hidden>
+        <div class="hint" id="audioTarget" style="margin-top:4px"></div>
+        <div class="audiov" id="audioList"></div>
+      </div>
+    </details>
+  </div>
+
+  <!-- ----------------------------------------------------------- center -->
+  <div class="center">
+    <canvas id="view"></canvas>
+    <div class="hud2">
+      <button id="zOut" class="sm">&minus;</button>
+      <button id="zIn" class="sm">+</button>
+    </div>
+    <div class="hud" id="hud"></div>
+    <div class="busy" id="busy">working&hellip;</div>
+  </div>
+
+  <!-- ------------------------------------------------------------ right -->
+  <div class="col right">
+    <details class="panel" open>
+      <summary>Playback</summary>
+      <div class="pbody">
+        <canvas class="prev" id="prev" width="270" height="270"></canvas>
+        <div class="row" style="margin-top:6px">
+          <button id="play" class="primary">Play</button>
+          <button id="popPrev" class="sm" title="open a bigger preview">Preview</button>
+          <span id="frameLabel" class="hint" style="margin:0">—</span>
+        </div>
+        <input type="range" id="scrub" min="0" max="0" value="0">
+        <label>mode</label>
+        <select id="playMode">
+          <option value="loop">loop</option>
+          <option value="pingpong">ping-pong</option>
+          <option value="once">once</option>
+        </select>
+        <!-- The player's OWN fps and speed. Both are preview-only and neither
+             reaches the sidecar -- the document's fps is the one in the Grid
+             panel, and that is the number Apply metadata writes as "fps". The
+             point of the split is that the two do not move each other: changing
+             the document's frame rate must not silently change how the preview
+             plays, and changing how the preview plays must not touch the file.
+             Note that `mode` above is NOT in this group -- play_mode really is
+             a document setting and is saved with the rest of the metadata. -->
+        <div class="grid2" style="margin-top:6px">
+          <div><label>player fps</label><input type="number" id="playFps" value="24" min="1" max="240"></div>
+          <div><label>speed</label><select id="playSpeed">
+            <option value="0.25">0.25&times;</option>
+            <option value="0.5">0.5&times;</option>
+            <option value="1" selected>1&times;</option>
+            <option value="2">2&times;</option>
+            <option value="4">4&times;</option>
+          </select></div>
+        </div>
+        <label class="chk"><input type="checkbox" id="onion"><span>onion skin (prev / next)</span></label>
+        <label class="chk"><input type="checkbox" id="loopSel"><span id="loopSelLabel">play selection only</span></label>
+        <label>trim playback to frame (0 = last)</label>
+        <input type="number" id="trimTo" value="0" min="0">
+      </div>
+    </details>
+
+    <details class="panel" open>
+      <summary>Timeline</summary>
+      <div class="pbody">
+        <div class="strip" id="strip"></div>
+        <div class="row" style="margin-top:6px">
+          <button id="selAll" class="sm">All</button>
+          <button id="selNone" class="sm">None</button>
+          <button id="selInvert" class="sm">Invert</button>
+          <button id="selEven" class="sm">Even</button>
+          <button id="selOdd" class="sm">Odd</button>
+        </div>
+      </div>
+    </details>
+
+    <details class="panel">
+      <summary>Grid</summary>
+      <div class="pbody">
+        <div class="kv" id="layoutkv"></div>
+        <label>columns</label>
+        <div class="row">
+          <input type="number" id="cols" min="1" value="1" style="flex:1">
+          <button id="applyCols" class="sm">Set</button>
+          <button id="autoCols" class="sm">Auto</button>
+        </div>
+        <div class="hint" id="colhint"></div>
+        <div class="grid2" style="margin-top:6px">
+          <div><label>cell w</label><input type="number" id="cw" min="2" value="64"></div>
+          <div><label>cell h</label><input type="number" id="ch" min="2" value="64"></div>
+        </div>
+        <div class="row" style="margin-top:6px">
+          <button id="applyCell" class="sm">Resize cells</button>
+        </div>
+        <label>name</label>
+        <input type="text" id="metaName">
+        <div class="grid2" style="margin-top:6px">
+          <div><label>anchor</label><select id="metaAnchor">
+            <option value="none">none</option>
+            <option value="bottom-center">bottom-center</option></select></div>
+          <div><label>blend</label><select id="metaBlend">
+            <option value="straight">straight</option>
+            <option value="additive">additive</option></select></div>
+        </div>
+        <!-- fps belongs here because it IS a document setting: Apply metadata
+             writes it into the sidecar JSON as "fps", and that is the number the
+             export and the preview player both read. The speed multiplier used
+             to sit beside it and does not belong here -- speed is preview-only
+             and never reaches the sidecar, so it lives in the Playback panel
+             with the rest of the player's own controls rather than here, where
+             it would look like something that gets saved. -->
+        <label>fps</label>
+        <input type="number" id="fps" value="24" min="1" max="240">
+        <div class="row" style="margin-top:6px">
+          <button id="applyMeta" class="sm">Apply metadata</button>
+        </div>
+        <div class="hint">writes straight into the sidecar JSON beside the sheet.
+          The sheet PNG is not touched, so a grid change still needs Save.</div>
+      </div>
+    </details>
+
+    <details class="panel">
+      <summary>Verification</summary>
+      <div class="pbody">
+        <div class="row">
+          <button id="verify2">Run invariants</button>
+          <span id="vbadge" class="badge mut">not run</span>
+        </div>
+        <div class="grid2" style="margin-top:6px">
+          <div><label>near-black</label><input type="number" id="vBlack" value="4" min="0" max="64"></div>
+          <div><label>opaque &ge;</label><input type="number" id="vLeak" value="200" min="1" max="255"></div>
+        </div>
+        <div class="grid2" style="margin-top:6px">
+          <div><label>bright &gt;</label><input type="number" id="vBright" value="64" min="1" max="255"></div>
+          <div><label>max hole px</label><input type="number" id="vErode" value="24" min="1" max="4096"></div>
+        </div>
+        <pre class="log" id="vlog">not run</pre>
+      </div>
+    </details>
+
+    <details class="panel">
+      <summary>Export</summary>
+      <div class="pbody">
+        <label class="chk"><input type="checkbox" id="wantGif" checked><span>animated GIF</span></label>
+        <label class="chk"><input type="checkbox" id="wantPreview" checked><span>preview HTML player</span></label>
+        <div class="grid2">
+          <div><label>gif scale</label><input type="number" id="gifScale" value="0.5"
+               min="0.1" max="1" step="0.05"></div>
+          <div><label>gif bg</label><select id="gifBg">
+            <option value="checker">checker</option>
+            <option value="solid">solid</option></select></div>
+        </div>
+        <label>output folder (blank = runs/editor_&hellip;)</label>
+        <input type="text" id="outDir" placeholder="leave blank for the app's runs folder">
+        <!-- A <label>, not a <div>. Every one of these rows is a checkbox with its
+             own words beside it, and in a <div> the words are not part of the
+             control: clicking them does nothing at all. That is what "allow
+             overwriting the sheet this document was loaded from when checked not
+             working" turned out to be -- the box itself was fine, but the text is
+             what a user aims at, and clicking it left the box unticked, so the
+             save refused and the opt-in looked broken. A <label> wrapping the
+             input makes the whole row toggle it, with no JS. The audio panel's
+             "play with preview" already did this; these six rows did not. -->
+        <label class="chk" style="margin-top:6px"><input type="checkbox" id="onlySel">
+          <span id="onlySelLabel">only the selected frames</span></label>
+        <label class="chk" style="margin-top:6px"><input type="checkbox" id="overwrite">
+          <span>allow overwriting the sheet this document was loaded from</span></label>
+        <div class="row" style="margin-top:7px">
+          <button id="save2" class="primary">Save sheet + sidecar</button>
+          <a class="navlink" id="dlSheet" href="#" target="_blank"
+             style="align-self:center">download composed PNG</a>
+        </div>
+        <div id="saveHint" class="hint"></div>
+        <div id="saveout"></div>
+      </div>
+    </details>
+  </div>
+</div>
+
+<footer>
+  <span id="status">ready</span>
+  <span class="sp"></span>
+  <span>V select &middot; H pan &middot; B pencil &middot; E eraser &middot; I picker
+    &middot; &larr;&rarr; frame &middot; &uarr;&darr; nudge (Alt+&larr;&rarr; horizontal,
+    Shift = 10px) &middot; 0 fit &middot; 1:1 &middot; space play &middot; D theme
+    &middot; ^Z undo</span>
+  <span class="sp"></span>
+  <span id="dims"></span>
+  <span id="stale" class="badge warn"></span>
+  <span id="build" class="chip" title="editor build - reload if this is not the latest"></span>
+</footer>
+</div>
+<div class="toast" id="toast"></div>
+<!-- Big preview modal: filled by renderBig, kept in sync from renderPreview. -->
+<div class="bigback" id="bigBack" hidden>
+  <div class="bigdlg" role="dialog" aria-label="Large animation preview">
+    <div class="bigbar">
+      <button id="bigPlay" class="sm primary" title="play / pause">Play</button>
+      <button id="bigFirst" class="sm" title="first played frame">|&#9664;</button>
+      <button id="bigLast" class="sm" title="last played frame">&#9654;|</button>
+      <input type="range" id="bigScrub" min="0" max="0" value="0" title="scrub">
+      <button id="bigOut" class="sm" title="zoom out">&minus;</button>
+      <span class="zl" id="bigZoomLab">100%</span>
+      <button id="bigIn" class="sm" title="zoom in">+</button>
+      <button id="bigFit" class="sm" title="fit the frame to the window">Fit</button>
+      <button id="big100" class="sm" title="actual pixels">100%</button>
+      <span class="fr" id="bigFrameLab"></span>
+      <span class="sp"></span>
+      <button id="bigClose" class="sm">Close</button>
+    </div>
+    <div class="bigview" id="bigView"><canvas id="bigCv"></canvas></div>
+  </div>
+</div>
+
+<script>
+"use strict";
+// Bumped whenever the editor changes. Shown in the footer so a stale cached
+// page (the cause of "the fix is not there" reports) is visible at a glance.
+const BUILD = "editor 2026-09-21 audio-audition-stale-watch big-preview popout-100 popout-transport popout-firstlast-intfit clean-url poefits";
+const $ = id => document.getElementById(id);
+
+// ------------------------------------------------------------------ state
+const S = {
+  doc: null,          // {id,n,rev,layout,meta,cell_rev,dirty,undo,redo,journal}
+  sel: new Set(),
+  anchorCell: 0,
+  tool: "select",
+  img: new Map(),     // index -> HTMLImageElement (loaded)
+  imgRev: new Map(),  // index -> cell_rev the cached image corresponds to
+  pending: new Map(), // index -> Promise
+  view: {s: 1, tx: 0, ty: 0},
+  cur: 0,             // playback frame
+  playing: false,
+  // The player's fps is its own, but "its own" has to start somewhere sane: on
+  // open it follows the document, so a 12 fps sheet previews at 12. Touching the
+  // box takes ownership and the document stops moving it; opening another sheet
+  // hands it back. See the Playback panel and applyDoc.
+  playFpsOwn: false,
+  lastT: 0,
+  acc: 0,
+  dir: 1,             // ping-pong direction
+  busy: 0,
+  stroke: [],         // [{x,y,r,rgba,mode,preview}] in sheet pixel space
+  strokeTool: null,
+  marquee: null,      // {x0,y0,x1,y1} in sheet pixel space
+  hover: -1,
+  hoverPx: null,
+  // The transform box: a rectangle around each frame's subject, with the handles
+  // a gizmo has. `xformLive` is the transform being previewed mid-drag and is
+  // null the rest of the time, so "is there a box being dragged" is one test.
+  xform: false,
+  xformLive: null,
+  xfCursor: "",       // the last cursor this file set on #view, so a move that
+                      // changes nothing does not touch the DOM
+  // index -> {rev, box} for the content box of a cell, keyed by cell_rev so an
+  // edit invalidates it without anything having to remember to say so.
+  boxCache: new Map(),
+};
+const SHEET = () => {
+  const L = S.doc.layout;
+  return {w: L.columns * L.cell_w, h: L.rows * L.cell_h,
+          cw: L.cell_w, ch: L.cell_h, cols: L.columns, rows: L.rows};
+};
+function toast(msg){
+  const t = $("toast"); t.textContent = msg; t.classList.add("on");
+  clearTimeout(toast._t); toast._t = setTimeout(()=>t.classList.remove("on"), 2200);
+}
+// Any uncaught error or rejected promise lands in the status line, which
+// outlives the toast. A silent exception in a pointer handler is exactly how
+// "the pencil does not work" presents, and this makes it visible and reportable
+// instead of invisible.
+window.addEventListener("error", e => {
+  const where = e.filename ? " (" + String(e.filename).split("/").pop() +
+                ":" + e.lineno + ")" : "";
+  try { $("status").textContent = "page error: " + (e.message || "error") + where; }
+  catch(err){ /* nothing we can do */ }
+});
+window.addEventListener("unhandledrejection", e => {
+  const r = e.reason;
+  try { $("status").textContent = "error: " + ((r && r.message) || String(r)); }
+  catch(err){ /* nothing we can do */ }
+});
+function busy(on){
+  S.busy += on ? 1 : -1;
+  $("busy").classList.toggle("on", S.busy > 0);
+}
+const selArr = () => [...S.sel].sort((a,b)=>a-b);
+const selLabel = () => S.sel.size === 0
+  ? "no selection \u2014 ops apply to all " + (S.doc ? S.doc.n : 0) + " cells"
+  : S.sel.size + " of " + S.doc.n + " cells selected";
+
+// Shift-select is a LINEAR range of frame indices, on the sheet and in the
+// timeline alike, and it includes both ends.
+//
+// It used to be a rectangle on the sheet and a range in the timeline, which are
+// the same thing only while the two cells share a row. On the walk sheet
+// (31 columns) cell 4 is row 0 col 4 and cell 99 is row 3 col 6, so shift-
+// clicking 4 then 99 selected a 4x3 block of 12 cells on the canvas and the 96
+// frames 4..99 in the timeline. Two selection surfaces disagreeing about what
+// shift-click means is a bug on its own, and the frame range is the one a sprite
+// sheet wants: a rectangle is already what the marquee drag is for, and it is
+// the only way to rubber-band from inside the sheet.
+function selectRange(a, b){
+  const n = S.doc ? S.doc.n : 0;
+  if (n <= 0) return [0, -1];
+  // Clamped, not merely sorted: the anchor survives from the previous sheet, so
+  // either end can be an index this document does not have.
+  const x = Math.min(a | 0, b | 0), y = Math.max(a | 0, b | 0);
+  const lo = Math.max(0, x), hi = Math.min(n - 1, y);
+  for (let k = lo; k <= hi; k++) S.sel.add(k);
+  return [lo, hi];
+}
+
+// -------------------------------------------------------------------- api
+async function api(path, body, method){
+  const opt = {method: method || (body === undefined ? "GET" : "POST")};
+  if (body !== undefined){
+    opt.headers = {"Content-Type": "application/json"};
+    opt.body = JSON.stringify(body);
+  }
+  const r = await fetch(path, opt);
+  let d;
+  try { d = await r.json(); } catch(e){ d = {ok:false, error:"bad response " + r.status}; }
+  // A route that is not there answers 404 with FastAPI's {"detail": "Not Found"},
+  // which carries neither `ok` nor `error` -- so the check below walks straight
+  // past it and the caller gets an object with no fields, reads `undefined` out
+  // of it and reports success. That is how a stale server (one started before a
+  // new route existed) made Apply metadata claim it had written a file it had
+  // not touched. Every route here answers 200 when it means yes, so the status
+  // is the honest signal.
+  if (!r.ok && !d.error){
+    d = {ok:false, error:"HTTP " + r.status + " from " + path};
+  }
+  if (!d.ok && d.error){
+    // The server keeps open documents in memory, so restarting it invalidates
+    // every id this page is holding. Without this check the page keeps its
+    // cached cell images, still looks completely healthy -- toolbar, sheet,
+    // timeline, playback -- and every single write dies as an unhandled
+    // rejection. The pencil and eraser look broken while nothing else does.
+    if (/unknown document/i.test(d.error)) recoverFromRestart();
+    throw new Error(d.error);
+  }
+  return d;
+}
+
+// Confirm before destroying the session: a network blip must not do this.
+let recovering = false;
+async function docIsGone(){
+  if (!S.doc) return false;
+  try {
+    const r = await fetch("/api/editor/" + S.doc.id + "/cell/0.png",
+                          {cache: "no-store"});
+    return r.status === 404;
+  } catch(e){ return false; }
+}
+async function recoverFromRestart(){
+  if (recovering || !S.doc) return;
+  if (!(await docIsGone())) return;
+  recovering = true;
+  const path = $("sheetPath").value.trim();
+  const n = (S.doc.journal || []).length;
+  // The status line outlives the toast, and the user has just lost unsaved work,
+  // so the explanation belongs in both.
+  const lost = "the server restarted and no longer had this sheet open"
+    + (n ? "; its " + n + " unsaved edit" + (n === 1 ? " is" : "s are") + " gone"
+         : "");
+  S.doc = null;
+  S.img.clear(); S.imgRev.clear();
+  $("docname").textContent = "no sheet open";
+  // Repaint the panels that render *from* the document, or they keep showing the
+  // document that was just given up on. `docname` above was the only thing reset
+  // here, so a failed reopen left the Audio panel listing clips belonging to a
+  // sheet that no longer exists -- and, in the case that was reported, an empty
+  // box that looked like a broken list. All three of these already handle a null
+  // document, which is what makes this a repaint rather than a new state.
+  renderAudio();
+  try {
+    if (!path){
+      toast(lost);
+      $("status").textContent = lost + ". Reopen a sheet to continue.";
+      return;
+    }
+    toast(lost + " \u2014 reopening it.");
+    // openSheet has to report whether it worked, because the note here is
+    // written AFTER it returns. The first version of this wrote the optimistic
+    // "Reopening it." unconditionally, so when the sheet could not be reopened
+    // -- a moved or deleted file, which is exactly what the open-by-path box is
+    // for -- it overwrote the specific "no such sheet: <path>" the failed open
+    // had just put there and left the page claiming to be doing something it
+    // had already given up on. The page sat with no document and a status line
+    // that said everything was fine.
+    const back = await openSheet(path);
+    $("status").textContent = back
+      ? lost + ". Reopened " + path + "."
+      : lost + ", and it could not be reopened from " + path
+        + " \u2014 pick a sheet from the library.";
+  } finally {
+    recovering = false;
+  }
+}
+
+// ------------------------------------------------------------- cell images
+function loadCell(i){
+  if (S.img.has(i) && S.imgRev && S.imgRev.get(i) === S.doc.cell_rev[i]) {
+    return Promise.resolve(S.img.get(i));
+  }
+  const p = new Promise((res, rej) => {
+    const im = new Image();
+    im.onload = () => {
+      S.img.set(i, im);
+      S.imgRev.set(i, S.doc.cell_rev[i]);
+      // Nothing stays in `pending` once it settles. It is only ever written --
+      // no caller reads it -- so an entry left behind is the decoded Image (and
+      // its bitmap) kept alive by a promise nothing will ever ask for again.
+      // Across a session that is one retained frame per cell per document
+      // opened, which is exactly the kind of growth that makes a page that has
+      // been up for an hour stop responding.
+      S.pending.delete(i);
+      res(im);
+    };
+    // A cell PNG 404s the moment the server forgets the document, and this is
+    // usually the first thing to fail -- before any op is even attempted. It
+    // does not go through api(), so the check has to live here too.
+    im.onerror = () => {
+      recoverFromRestart();
+      S.pending.delete(i);
+      rej(new Error("cell " + i + " failed to load"));
+    };
+    // The revision is part of the URL, and has to be.
+    //
+    // The same src does not mean a new request: the browser answers a re-load
+    // of a URL it already has with the bitmap it already decoded, whatever
+    // Cache-Control says, and hands the page back the PRE-EDIT cell. Every op
+    // reloads a changed cell through this function, so the stroke landed, the
+    // journal recorded it and the server's PNG was correct -- while the sheet,
+    // the preview and the timeline all kept drawing the old pixels. The user, of
+    // course, sees only the last of those: reported as "pencil eraser and clear
+    // frame not working", and it is why the byte-level checks (which fetch the
+    // cell, or hash it, rather than looking at the page) all passed. A URL that
+    // changes with the revision cannot be answered from a stale entry, so this
+    // is a fix rather than a cache-buster: same revision, same image.
+    im.src = "/api/editor/" + S.doc.id + "/cell/" + i + ".png?rev=" +
+             S.doc.cell_rev[i];
+  });
+  S.pending.set(i, p);
+  return p;
+}
+async function loadAllCells(onStep){
+  const jobs = [];
+  for (let i = 0; i < S.doc.n; i++) jobs.push(loadCell(i));
+  let done = 0;
+  const tick = () => { done++; if (onStep) onStep(done, S.doc.n); };
+  jobs.forEach(j => j.then(tick, tick));
+  await Promise.all(jobs);
+}
+async function refreshCells(idxs){
+  const live = idxs.filter(i => i >= 0 && i < S.doc.n);
+  for (const i of live){ S.img.delete(i); S.imgRev.delete(i); }
+  await Promise.all(live.map(loadCell));
+  // The new pixels only exist now, and every surface that draws pixels has
+  // already been rendered once -- applyDoc() re-renders from the OLD image while
+  // the payload is applied, and the op's caller only awaits this reload
+  // afterwards. The sheet came out right by luck (draw() runs in the caller's
+  // finally), but the frame preview and the timeline thumbnails kept the frame
+  // as it was before the edit, so the edit looked like it had not happened at
+  // all. Re-render both here, once the pixels they draw actually exist.
+  for (const i of live) drawThumb(i);
+  renderPreview();
+  draw();
+}
+
+// -------------------------------------------------------------- viewport
+const view = $("view");
+const ctx = view.getContext("2d");
+let DPR = Math.max(1, window.devicePixelRatio || 1);
+const check = document.createElement("canvas");
+let checkPat = null;
+// One CanvasPattern for the whole session. A pattern is resolved against the
+// context's transform at fill time, so a single instance is correct at every
+// zoom and pan -- there is nothing per-draw about it.
+function checkerPattern(){
+  if (!checkPat) checkPat = ctx.createPattern(check, "repeat");
+  return checkPat;
+}
+(function(){
+  check.width = check.height = 16;
+  const c = check.getContext("2d");
+  c.fillStyle = "#ffffff"; c.fillRect(0,0,16,16);
+  c.fillStyle = "#e2e6ea"; c.fillRect(0,0,8,8); c.fillRect(8,8,8,8);
+})();
+
+function resize(){
+  const r = view.parentElement.getBoundingClientRect();
+  DPR = Math.max(1, window.devicePixelRatio || 1);
+  view.width = Math.max(1, Math.round(r.width * DPR));
+  view.height = Math.max(1, Math.round(r.height * DPR));
+  view.style.width = r.width + "px";
+  view.style.height = r.height + "px";
+  draw();
+}
+window.addEventListener("resize", resize);
+
+function fitView(){
+  if (!S.doc) return;
+  const {w, h} = SHEET();
+  const vw = view.width / DPR, vh = view.height / DPR;
+  const s = Math.min((vw - 40) / w, (vh - 40) / h);
+  S.view.s = Math.max(0.02, Math.min(8, s));
+  S.view.tx = (vw - w * S.view.s) / 2;
+  S.view.ty = (vh - h * S.view.s) / 2;
+  draw();
+}
+// Redraw after an undo or a redo, re-fitting only if the sheet changed shape.
+//
+// Undo used to redraw by calling fitView() outright. fitView is a pure function
+// of the sheet's pixel size and the viewport, so when the sheet has not changed
+// shape it recomputes exactly the view that is already there -- and the only
+// thing it can actually alter is a zoom or pan the user set by hand. Undo gets
+// pressed *while looking at a pixel*, so being thrown back to the fitted view
+// every time makes that impossible ("when undo do not change the zoom and
+// position"). A view transform is in sheet-pixel space, so it only needs
+// recomputing when the sheet's own pixel size moves: an undo of keep_range,
+// set_columns or rotate, or a cell resize.
+//
+// `was` is the sheet size captured *before* the request. draw() is still called
+// on both paths, because fitView was the only redraw these handlers had.
+function refitView(was){
+  const {w, h} = SHEET();
+  if (!was || was.w !== w || was.h !== h) fitView();
+  else draw();
+}
+function zoomAt(f, cx, cy){
+  const s0 = S.view.s;
+  const s1 = Math.max(0.02, Math.min(32, s0 * f));
+  S.view.tx = cx - (cx - S.view.tx) * (s1 / s0);
+  S.view.ty = cy - (cy - S.view.ty) * (s1 / s0);
+  S.view.s = s1;
+  draw();
+}
+function screenToSheet(x, y){
+  return [(x - S.view.tx) / S.view.s, (y - S.view.ty) / S.view.s];
+}
+function cellAt(sx, sy){
+  const {cw, ch, cols, rows} = SHEET();
+  if (sx < 0 || sy < 0) return -1;
+  const c = Math.floor(sx / cw), r = Math.floor(sy / ch);
+  if (c < 0 || r < 0 || c >= cols || r >= rows) return -1;
+  const i = r * cols + c;
+  return i < S.doc.n ? i : -1;
+}
+
+// ------------------------------------------------------------- transform box
+// The box that touches the art: a rectangle around the subject in a frame, with
+// the handles a transform gizmo has -- four corners, four edge midpoints, and a
+// round rotate handle held off the top edge.
+//
+// It is a *gesture* layer, not a second document. A drag draws a preview with
+// the canvas's own transform and sends one `transform_content` op on release, so
+// the pixels are changed by the same server-side path as every other op, undo
+// needs nothing from this file, and the preview cannot disagree with the result
+// in any way that is not a bug in one of them.
+const XF_KEYS = ["nw", "n", "ne", "w", "e", "sw", "s", "se"];
+// The handle across the box from each handle. Dragging a corner or an edge keeps
+// the opposite one still, which is what "drag the corner" means everywhere else;
+// the rotate handle and a move turn about the box's centre instead.
+//
+// Two lookups come out of this one pairing, and they have to: the *op* is told an
+// anchor by name ("bottom-right"), while the *preview* needs a point in cell
+// pixels. Written out separately they drifted -- the preview pivoted on the
+// handle being dragged rather than on the point that handle keeps still, so
+// `d0` measured zero and every scale drag quietly resolved to a factor of 1. The
+// names come from ANCHORS in editor.py, where "bottom-right" is the bottom-right
+// *pixel* of the box -- which is exactly the se handle's point.
+const XF_MIRROR = {nw: "se", n: "s", ne: "sw", w: "e",
+                   e: "w", sw: "ne", s: "n", se: "nw"};
+const XF_ANCHOR = {nw: "top-left", n: "top-center", ne: "top-right",
+                   w: "center-left", e: "center-right",
+                   sw: "bottom-left", s: "bottom-center", se: "bottom-right"};
+const XF_OPPOSITE = Object.fromEntries(
+  XF_KEYS.map(k => [k, XF_ANCHOR[XF_MIRROR[k]]]));
+const XF_CURSOR = {nw: "nwse-resize", se: "nwse-resize",
+                   ne: "nesw-resize", sw: "nesw-resize",
+                   n: "ns-resize", s: "ns-resize",
+                   w: "ew-resize", e: "ew-resize", rot: "grab"};
+
+// The box's centre the way `anchor_point` defines it: the middle pixel of the
+// box, floored. Restated here because the op measures the anchor on the server
+// and this only has to *draw* it -- but if the two disagreed the box would jump
+// by a pixel every time a drag was committed, which is exactly the check the
+// driver makes.
+function boxPivot(b){
+  return [b[0] + ((b[2] - b[0] + 1) >> 1), b[1] + ((b[3] - b[1] + 1) >> 1)];
+}
+
+// Where a handle sits on the box, in cell pixels, before any transform. The one
+// definition, used by the drawing, the hit-test and the drag maths -- three
+// copies of this would be three chances for a handle to be drawn somewhere it
+// cannot be grabbed.
+function xformLocalHandle(b, key){
+  const x0 = b[0], y0 = b[1], x1 = b[2] + 1, y1 = b[3] + 1;
+  const mx = (x0 + x1) / 2, my = (y0 + y1) / 2;
+  return {nw: [x0, y0], n: [mx, y0], ne: [x1, y0],
+          w: [x0, my], e: [x1, my],
+          sw: [x0, y1], s: [mx, y1], se: [x1, y1]}[key];
+}
+
+// The tight box of a cell's opaque pixels, as the CLIENT has it decoded, cached
+// per cell revision. Computed lazily and only for cells that are on screen: a
+// 124-frame sheet of 512x640 is 40M pixels to scan, and draw() runs on every
+// pointer move.
+function contentBox(i){
+  if (!S.doc || i < 0 || i >= S.doc.n) return null;
+  const rev = S.doc.cell_rev[i];
+  const hit = S.boxCache.get(i);
+  if (hit && hit.rev === rev) return hit.box;
+  const im = S.img.get(i);
+  // Not cached while the image is missing: cell_rev does not change when a cell
+  // finally decodes, so a null cached on the first draw of a freshly opened
+  // sheet would outlive the load and the box would never appear. A missing
+  // image is a "not yet", not a "no subject".
+  if (!im) return null;
+  // ...and not cached unless the image is the one this revision names. Every op
+  // moves the revision before the pixels follow -- applyDoc applies the payload
+  // and re-renders, and refreshCells reloads the changed cells afterwards -- so
+  // without this test the box of the *previous* art gets filed under the new
+  // revision and is never asked for again. Measured: after a transform and an
+  // undo the box stayed on the scaled art while the server's cell was the
+  // original, and only the undo path showed it, because the forward path had an
+  // explicit clear bolted on next to it.
+  if (S.imgRev.get(i) !== rev) return null;
+  // willReadFrequently: built to be scanned and thrown away, and it is the
+  // whole cell -- 512x640 is a 1.3 MB readback, so the GPU round trip is the
+  // cost here rather than the scan.
+  const c = document.createElement("canvas");
+  c.width = im.width; c.height = im.height;
+  const g = c.getContext("2d", {willReadFrequently: true});
+  g.drawImage(im, 0, 0);
+  const d = g.getImageData(0, 0, c.width, c.height).data;
+  let x0 = 1e9, y0 = 1e9, x1 = -1, y1 = -1;
+  for (let y = 0; y < c.height; y++){
+    for (let x = 0; x < c.width; x++){
+      if (d[(y * c.width + x) * 4 + 3] > 0){
+        if (x < x0) x0 = x;
+        if (x > x1) x1 = x;
+        if (y < y0) y0 = y;
+        if (y > y1) y1 = y;
+      }
+    }
+  }
+  const box = x1 < 0 ? null : [x0, y0, x1, y1];
+  S.boxCache.set(i, {rev: rev, box: box});
+  return box;
+}
+
+// The transform currently being shown: the live drag if there is one, otherwise
+// the identity over the current frame's box. Everything that draws or hit-tests
+// goes through this, so there is one definition of "where the box is".
+function xformLive(){
+  if (S.xformLive) return S.xformLive;
+  const b = contentBox(S.cur);
+  if (!b) return null;
+  return {cell: S.cur, box: b, pivot: boxPivot(b),
+          dx: 0, dy: 0, f: 1, ang: 0, anchor: "center"};
+}
+
+// A point on the box, in cell pixels, after the transform -- using the same
+// matrix cv2's `getRotationMatrix2D` builds, so the preview cannot turn one way
+// while the op turns the other. (cv2's rotation part is [[cos, sin],[-sin, cos]],
+// which is `ctx.rotate(-a)` in canvas terms; the sign is the whole reason this
+// is one function rather than two inline expressions.)
+function xfPt(L, bx, by){
+  const a = L.ang * Math.PI / 180, ca = Math.cos(a), sa = Math.sin(a);
+  const dx = bx - L.pivot[0], dy = by - L.pivot[1];
+  return [L.pivot[0] + L.f * (ca * dx + sa * dy) + L.dx,
+          L.pivot[1] + L.f * (-sa * dx + ca * dy) + L.dy];
+}
+
+// ...and back, for turning a pointer position into a point on the box.
+function xfUnpt(L, px, py){
+  const a = -L.ang * Math.PI / 180, ca = Math.cos(a), sa = Math.sin(a);
+  const rx = (px - L.pivot[0] - L.dx) / L.f;
+  const ry = (py - L.pivot[1] - L.dy) / L.f;
+  return [L.pivot[0] + ca * rx - sa * ry, L.pivot[1] + sa * rx + ca * ry];
+}
+
+function cellPtScreen(i, bx, by){
+  const {cw, ch, cols} = SHEET();
+  const x = (i % cols) * cw, y = Math.floor(i / cols) * ch;
+  return [S.view.tx + (x + bx) * S.view.s, S.view.ty + (y + by) * S.view.s];
+}
+
+// Every handle's position in CSS pixels, plus the rotate handle. One function
+// for the drawing and the hit-testing, because two would drift.
+function xformPoints(){
+  const L = xformLive();
+  if (!L) return null;
+  const b = L.box;
+  const mx = (b[0] + b[2] + 1) / 2, my = (b[1] + b[3] + 1) / 2;
+  const pts = {};
+  for (const k of XF_KEYS){
+    const h = xformLocalHandle(b, k);
+    const q = xfPt(L, h[0], h[1]);
+    pts[k] = cellPtScreen(L.cell, q[0], q[1]);
+  }
+  // The rotate handle sits along the box's own "up", so it stays above the box
+  // when the box is rotated. The cell-to-screen mapping is a uniform scale, so a
+  // direction computed in cell pixels is the same direction on screen.
+  const tc = xfPt(L, mx, b[1]), bc = xfPt(L, mx, b[3] + 1);
+  let ux = tc[0] - bc[0], uy = tc[1] - bc[1];
+  const ul = Math.hypot(ux, uy) || 1;
+  ux /= ul; uy /= ul;
+  const top = cellPtScreen(L.cell, tc[0], tc[1]);
+  pts.rot = [top[0] + ux * 26, top[1] + uy * 26];
+  pts.top = top;
+  return {L: L, pts: pts};
+}
+
+// What is under the pointer: a handle key, "rot", "move" inside the box, or
+// null. `r` is in CSS pixels.
+function xformHit(g, x, y, r){
+  if (!g) return null;
+  const near = (p) => Math.hypot(p[0] - x, p[1] - y) <= r;
+  if (near(g.pts.rot)) return "rot";
+  for (const k of XF_KEYS) if (near(g.pts[k])) return k;
+  // Inside is tested by putting the pointer back into the box's own space, so it
+  // stays correct once the box has been rotated.
+  const [sx, sy] = screenToSheet(x, y);
+  const {cw, ch, cols} = SHEET();
+  const i = g.L.cell;
+  const lx = sx - (i % cols) * cw, ly = sy - Math.floor(i / cols) * ch;
+  const [bx, by] = xfUnpt(g.L, lx, ly);
+  const b = g.L.box;
+  if (bx >= b[0] && bx <= b[2] + 1 && by >= b[1] && by <= b[3] + 1) return "move";
+  return null;
+}
+
+// Draw the boxes. Called from draw() once the sheet transform is off, so every
+// coordinate here is a CSS pixel and the handles stay the same size at any zoom.
+function drawXform(){
+  if (!S.xform || !S.doc || S.tool !== "select") return;
+  const {cw, ch, cols} = SHEET();
+  const s = S.view.s;
+  const vw = view.width / DPR, vh = view.height / DPR;
+  const live = S.xformLive;
+
+  // Every frame's box, so the sheet shows where each subject sits -- context,
+  // hence thin and dashed rather than solid.
+  ctx.save();
+  ctx.setLineDash([3, 3]);
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = "rgba(99,102,241,.55)";
+  for (let i = 0; i < S.doc.n; i++){
+    const x = (i % cols) * cw, y = Math.floor(i / cols) * ch;
+    if ((x + cw) * s + S.view.tx < -8) continue;
+    if (x * s + S.view.tx > vw + 8) continue;
+    if ((y + ch) * s + S.view.ty < -8) continue;
+    if (y * s + S.view.ty > vh + 8) continue;
+    const b = contentBox(i);
+    if (!b) continue;
+    ctx.beginPath();
+    if (live && live.cell === i){
+      const ring = [[b[0], b[1]], [b[2] + 1, b[1]], [b[2] + 1, b[3] + 1],
+                    [b[0], b[3] + 1]];
+      ring.forEach((q, k) => {
+        const t = xfPt(live, q[0], q[1]);
+        const p = cellPtScreen(i, t[0], t[1]);
+        if (k) ctx.lineTo(p[0], p[1]); else ctx.moveTo(p[0], p[1]);
+      });
+      ctx.closePath();
+    } else {
+      const a = cellPtScreen(i, b[0], b[1]);
+      const z = cellPtScreen(i, b[2] + 1, b[3] + 1);
+      ctx.rect(a[0], a[1], z[0] - a[0], z[1] - a[1]);
+    }
+    ctx.stroke();
+  }
+  ctx.restore();
+
+  // The frame being worked on: solid, with the handles.
+  const g = xformPoints();
+  if (!g) return;
+  ctx.save();
+  ctx.setLineDash([]);
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = "#6366f1";
+  ctx.beginPath();
+  ["nw", "ne", "se", "sw"].forEach((k, n) => {
+    if (n) ctx.lineTo(g.pts[k][0], g.pts[k][1]);
+    else ctx.moveTo(g.pts[k][0], g.pts[k][1]);
+  });
+  ctx.closePath();
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(g.pts.top[0], g.pts.top[1]);
+  ctx.lineTo(g.pts.rot[0], g.pts.rot[1]);
+  ctx.stroke();
+  ctx.fillStyle = "#6366f1";
+  ctx.strokeStyle = "#ffffff";
+  ctx.lineWidth = 1;
+  for (const k of XF_KEYS){
+    const p = g.pts[k];
+    ctx.beginPath();
+    ctx.rect(p[0] - 3.5, p[1] - 3.5, 7, 7);
+    ctx.fill(); ctx.stroke();
+  }
+  ctx.beginPath();
+  ctx.arc(g.pts.rot[0], g.pts.rot[1], 5, 0, Math.PI * 2);
+  ctx.fill(); ctx.stroke();
+  ctx.restore();
+}
+
+// Turn a finished drag into one op. The frames it touches are the selection when
+// the current frame is part of it, and just the current frame otherwise -- the
+// box is drawn on `S.cur`, so editing some other frame's box would be a lie.
+function xformTargets(){
+  if (S.sel.size && S.sel.has(S.cur)) return [...S.sel];
+  return [S.cur];
+}
+
+async function commitXform(L){
+  const dx = Math.round(L.dx), dy = Math.round(L.dy);
+  const f = Math.round(L.f * 1000) / 1000;
+  const ang = Math.round(L.ang * 100) / 100;
+  if (!dx && !dy && f === 1 && !ang){ S.xformLive = null; draw(); return; }
+  busy(true);
+  try {
+    const res = await api("/api/editor/" + S.doc.id + "/op",
+      {name: "transform_content", sel: xformTargets(),
+       args: {dx: dx, dy: dy, scale: f, angle: ang, anchor: L.anchor,
+              threshold: 0, resample: "nearest"}});
+    applyDoc(res.doc);
+    if (res.changed.length) await refreshCells(res.changed);
+    // No boxCache.clear() here: contentBox only ever caches a box it computed
+    // from pixels whose revision matches, so a reload invalidates the entry by
+    // itself. The clear that used to be here covered this path and not the undo
+    // path, which is exactly how the stale box survived an undo.
+    $("status").textContent = res.msg;
+    toast(res.msg);
+  } catch(ex){
+    // A refusal lands here, and the box goes back to where the art still is --
+    // a preview left on screen after a refusal is a claim the document does not
+    // support.
+    toast(ex.message);
+    $("status").textContent = ex.message;
+  } finally {
+    S.xformLive = null;
+    busy(false); draw(); renderTimeline();
+  }
+}
+
+function draw(){
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  const vw = view.width / DPR, vh = view.height / DPR;
+  // The one colour the canvas needs in JS rather than in CSS: resolved on each
+  // theme switch, not per frame -- draw() runs on every pointer move.
+  ctx.fillStyle = STAGE;
+  ctx.fillRect(0, 0, vw, vh);
+  if (!S.doc) return;
+  const {w, h, cw, ch, cols, rows} = SHEET();
+  const s = S.view.s;
+
+  ctx.save();
+  ctx.translate(S.view.tx, S.view.ty);
+  ctx.scale(s, s);
+
+  // sheet backdrop. The pattern is built once and reused: creating it per draw
+  // allocates a fresh CanvasPattern (and its own backing surface) on every
+  // pointer move and on every frame of playback, which is churn the compositor
+  // never gets a quiet moment to reclaim.
+  ctx.save();
+  ctx.fillStyle = checkerPattern();
+  ctx.fillRect(0, 0, w, h);
+  ctx.restore();
+
+  // cells
+  ctx.imageSmoothingEnabled = s < 1;
+  for (let i = 0; i < S.doc.n; i++){
+    const im = S.img.get(i);
+    if (!im) continue;
+    const x = (i % cols) * cw, y = Math.floor(i / cols) * ch;
+    if ((x + cw) * s + S.view.tx < -8) continue;
+    if (x * s + S.view.tx > vw + 8) continue;
+    if ((y + ch) * s + S.view.ty < -8) continue;
+    if (y * s + S.view.ty > vh + 8) continue;
+    // The frame being dragged is drawn through the transform, so what the user
+    // is aiming at is the result and not the thing they started from. Same
+    // composition as the op: scale and rotate about the pivot, then move -- so
+    // the pivot ends up exactly (dx, dy) from where it was.
+    const L = S.xformLive;
+    if (L && L.cell === i){
+      const p = L.pivot;
+      ctx.save();
+      ctx.translate(x + p[0] + L.dx, y + p[1] + L.dy);
+      ctx.rotate(-L.ang * Math.PI / 180);
+      ctx.scale(L.f, L.f);
+      ctx.translate(-(x + p[0]), -(y + p[1]));
+      ctx.drawImage(im, x, y, cw, ch);
+      ctx.restore();
+    } else {
+      ctx.drawImage(im, x, y, cw, ch);
+    }
+  }
+
+  // grid
+  if (s * cw > 3 && s * ch > 3){
+    ctx.lineWidth = 1 / s;
+    ctx.strokeStyle = "rgba(70,90,110,.22)";
+    ctx.beginPath();
+    for (let c = 0; c <= cols; c++){ ctx.moveTo(c*cw, 0); ctx.lineTo(c*cw, h); }
+    for (let r = 0; r <= rows; r++){ ctx.moveTo(0, r*ch); ctx.lineTo(w, r*ch); }
+    ctx.stroke();
+  }
+
+  // selection
+  // TostUI's canvas selection, and deliberately not a theme variable: this is
+  // drawn over the artwork, whose backdrop is the light checkerboard in both
+  // themes, so it has to stay legible on light whatever the UI is doing.
+  ctx.lineWidth = Math.max(1.5, 2 / s);
+  ctx.strokeStyle = "#6366f1";
+  ctx.fillStyle = "rgba(99,102,241,.13)";
+  for (const i of S.sel){
+    const x = (i % cols) * cw, y = Math.floor(i / cols) * ch;
+    ctx.fillRect(x, y, cw, ch);
+    ctx.strokeRect(x + ctx.lineWidth/2, y + ctx.lineWidth/2,
+                   cw - ctx.lineWidth, ch - ctx.lineWidth);
+  }
+  // current playback frame marker
+  if (S.doc && S.cur < S.doc.n){
+    const x = (S.cur % cols) * cw, y = Math.floor(S.cur / cols) * ch;
+    ctx.strokeStyle = "#be123c"; ctx.lineWidth = Math.max(1.5, 2 / s);
+    ctx.strokeRect(x + 1, y + 1, cw - 2, ch - 2);
+  }
+  // hover
+  if (S.hover >= 0 && !S.sel.has(S.hover)){
+    const x = (S.hover % cols) * cw, y = Math.floor(S.hover / cols) * ch;
+    ctx.strokeStyle = "rgba(99,102,241,.6)"; ctx.lineWidth = Math.max(1, 1.5 / s);
+    ctx.strokeRect(x, y, cw, ch);
+  }
+  // brush cursor -- without it the size box is a number with no referent, and
+  // a brush smaller than a pixel is indistinguishable from a broken tool.
+  if ((S.tool === "pencil" || S.tool === "erase") && S.hover >= 0 && S.hoverPx){
+    const bx = (S.hover % cols) * cw + S.hoverPx[0];
+    const by = Math.floor(S.hover / cols) * ch + S.hoverPx[1];
+    ctx.strokeStyle = S.tool === "erase"
+      ? "rgba(180,35,42,.9)" : "rgba(27,32,38,.9)";
+    ctx.lineWidth = Math.max(1, 1 / s);
+    ctx.beginPath();
+    ctx.arc(bx, by, brushRadius(), 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  // marquee
+  if (S.marquee){
+    const m = S.marquee;
+    ctx.strokeStyle = "#6366f1"; ctx.lineWidth = Math.max(1, 1.5 / s);
+    ctx.setLineDash([6 / s, 4 / s]);
+    ctx.strokeRect(Math.min(m.x0,m.x1), Math.min(m.y0,m.y1),
+                   Math.abs(m.x1-m.x0), Math.abs(m.y1-m.y0));
+    ctx.setLineDash([]);
+  }
+  // live stroke
+  if (S.stroke.length){
+    ctx.save();
+    ctx.beginPath(); ctx.rect(0, 0, w, h); ctx.clip();
+    for (const st of S.stroke){
+      ctx.fillStyle = st.preview;
+      ctx.beginPath();
+      ctx.arc(st.x, st.y, st.r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+  ctx.restore();
+
+  // Cell labels and the sound mark both need a cell big enough to read, so they
+  // share one threshold: at this zoom a 10px glyph fits inside a cell with room
+  // to spare, and below it both would be noise.
+  const legible = s * cw > 34 && s * ch > 20;
+
+  // cell index labels, only when they fit
+  if (legible){
+    ctx.save();
+    ctx.font = "600 10px ui-monospace,Consolas,monospace";
+    for (let i = 0; i < S.doc.n; i++){
+      const x = ((i % cols) * cw) * s + S.view.tx + 3;
+      const y = (Math.floor(i / cols) * ch) * s + S.view.ty + 12;
+      if (x < -20 || x > vw || y < 0 || y > vh) continue;
+      ctx.fillStyle = "rgba(27,32,38,.5)";
+      ctx.fillText(String(i), x + 1, y + 1);
+      ctx.fillStyle = S.sel.has(i) ? "#6366f1" : "rgba(27,32,38,.85)";
+      ctx.fillText(String(i), x, y);
+    }
+    ctx.restore();
+  }
+
+  // A frame that has a sound is marked in the corner the frame number does not
+  // use. The timeline badge is at the bottom of a 46px thumbnail and the Audio
+  // panel is a list of frame numbers, so neither answers "does THIS frame make a
+  // sound" while working on the sheet itself.
+  const sound = audioItems();
+  if (legible && sound.length){
+    // One pass over the clips, not one per cell: draw() runs on every pointer
+    // move, and filtering the clip list inside the cell loop is O(cells * clips).
+    const hasSound = new Set(sound.map(a => a.frame));
+    ctx.save();
+    ctx.font = "600 11px ui-monospace,Consolas,monospace";
+    ctx.textAlign = "right";
+    for (const i of hasSound){
+      if (i < 0 || i >= S.doc.n) continue;
+      const x = ((i % cols + 1) * cw) * s + S.view.tx - 3;
+      const y = (Math.floor(i / cols) * ch) * s + S.view.ty + 12;
+      if (x < -20 || x > vw + 20 || y < 0 || y > vh) continue;
+      ctx.fillStyle = "rgba(27,32,38,.5)";
+      ctx.fillText("\u266a", x + 1, y + 1);
+      // The same cyan as the timeline's badge, so the two surfaces are read as
+      // the same fact rather than two different ones.
+      ctx.fillStyle = "#0e7490";
+      ctx.fillText("\u266a", x, y);
+    }
+    ctx.restore();
+  }
+  // The transform box is drawn last, over the labels and the sound marks: it is
+  // the thing the user is manipulating, and a frame number drawn on top of a
+  // handle is a handle that looks broken.
+  drawXform();
+  hud();
+}
+
+function hud(){
+  if (!S.doc){ $("hud").textContent = ""; return; }
+  const {cw, ch} = SHEET();
+  let t = "zoom " + Math.round(S.view.s * 100) + "%   cell " + cw + "\u00d7" + ch;
+  if (S.hover >= 0 && S.hoverPx){
+    t += "   cell #" + S.hover + "  px (" + S.hoverPx[0] + "," + S.hoverPx[1] + ")";
+  }
+  if (S.tool === "pencil" || S.tool === "erase"){
+    t += "   brush " + $("brushSize").value + "px on screen";
+  }
+  $("hud").textContent = t;
+}
+
+// ------------------------------------------------------- viewport events
+let drag = null;
+view.addEventListener("pointerdown", e => {
+  if (!S.doc) return;
+  // Capture is a nicety (it keeps the drag alive off-canvas), never a
+  // precondition. It can throw -- a pointer that is not in an active buttons
+  // state, some touch/pen stacks -- and that used to abort the whole handler,
+  // so NO tool worked: clicks did not select, the pencil did not paint, and
+  // nothing was drawn. Swallow it and carry on.
+  try { view.setPointerCapture(e.pointerId); } catch(err){ /* not fatal */ }
+  const [sx, sy] = screenToSheet(e.offsetX, e.offsetY);
+  const ci = cellAt(sx, sy);
+
+  if (e.button === 1 || S.tool === "pan" || e.getModifierState("Space")){
+    drag = {kind: "pan", x: e.offsetX, y: e.offsetY,
+            tx: S.view.tx, ty: S.view.ty};
+    return;
+  }
+  if (e.button !== 0) return;
+
+  // The transform box takes the press before any tool does: its handles are
+  // small targets drawn on top of everything, so a press that lands on one is
+  // unambiguous. Only under the select tool, so the pencil can still paint
+  // inside the box rather than the box swallowing every stroke.
+  if (S.xform && S.tool === "select"){
+    const g = xformPoints();
+    const hit = xformHit(g, e.offsetX, e.offsetY, 8);
+    if (hit){
+      const L = g.L, b = L.box;
+      // A scale handle keeps the *opposite* point of the box still, which is
+      // what dragging a corner means everywhere else; the rotate handle and a
+      // move turn about the box's centre. The op has a pivot for each of those
+      // nine points, so the gesture and the op agree without either knowing
+      // about the other.
+      const pivot = (hit === "rot" || hit === "move")
+        ? boxPivot(b) : xformLocalHandle(b, XF_MIRROR[hit]);
+      const {cw, ch, cols} = SHEET();
+      const lx = sx - (L.cell % cols) * cw, ly = sy - Math.floor(L.cell / cols) * ch;
+      // The point a scale is measured against: the handle's own starting spot.
+      // The rotate handle measures against the top-centre, which is where its
+      // line goes, and a move measures against nothing -- it is the pointer's own
+      // delta. Passing "move" to xformLocalHandle is what used to throw here, and
+      // because S.xformLive is set above the throw, the failure looked like a box
+      // that previewed at the identity and then silently committed nothing.
+      const h = hit === "move" ? null
+              : xformLocalHandle(b, hit === "rot" ? "n" : hit);
+      const anchor = (hit === "rot" || hit === "move")
+        ? "center" : XF_OPPOSITE[hit];
+      S.xformLive = {cell: L.cell, box: b, pivot: pivot,
+                     dx: 0, dy: 0, f: 1, ang: 0, anchor: anchor};
+      drag = {kind: "xform", handle: hit, cell: L.cell, pivot: pivot,
+              anchor: anchor, start: [lx, ly], h0: h,
+              d0: h ? Math.hypot(h[0] - pivot[0], h[1] - pivot[1]) : 0,
+              a0: Math.atan2(ly - pivot[1], lx - pivot[0])};
+      draw();
+      return;
+    }
+  }
+
+  if (S.tool === "pencil" || S.tool === "erase"){
+    if (ci < 0) return;
+    S.stroke = [];
+    S.strokeTool = S.tool;
+    drag = {kind: "paint", touched: new Set()};
+    addStrokePoint(sx, sy, ci);
+    draw();
+    return;
+  }
+  if (S.tool === "pick"){
+    if (ci < 0) return;
+    pickColour(ci, sx - (ci % SHEET().cols) * SHEET().cw,
+                   sy - Math.floor(ci / SHEET().cols) * SHEET().ch);
+    return;
+  }
+  // select -- a press that lands inside a cell may turn out to be either a click
+  // or the start of a marquee, so the decision is deferred to pointerup.
+  // Committing to "click" on pointerdown (the obvious implementation) makes it
+  // impossible to rubber-band a selection starting on top of a cell, which is
+  // exactly where you almost always want to start one.
+  if (ci < 0){
+    if (!e.shiftKey && !e.ctrlKey && !e.metaKey){ S.sel.clear(); draw(); syncSel(); }
+    drag = {kind: "marquee", x0: sx, y0: sy, x1: sx, y1: sy,
+            add: e.ctrlKey || e.metaKey, base: new Set(S.sel),
+            startCell: -1, shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey};
+    return;
+  }
+  drag = {kind: "maybe", x0: sx, y0: sy, x1: sx, y1: sy, startCell: ci,
+          shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey, base: new Set(S.sel)};
+});
+
+view.addEventListener("pointermove", e => {
+  if (!S.doc) return;
+  const [sx, sy] = screenToSheet(e.offsetX, e.offsetY);
+  const ci = cellAt(sx, sy);
+  const changed = (ci !== S.hover);
+  S.hover = ci;
+  S.hoverPx = ci >= 0
+    ? [Math.floor(sx - (ci % SHEET().cols) * SHEET().cw),
+       Math.floor(sy - Math.floor(ci / SHEET().cols) * SHEET().ch)]
+    : null;
+
+  if (!drag){
+    // The handles are 7px across, so the cursor is the only thing that says they
+    // can be grabbed. It comes from the same hit-test the press uses: a cursor
+    // that promises a handle the press would not take is worse than no cursor.
+    let cur = "";
+    if (S.xform && S.tool === "select"){
+      const h = xformHit(xformPoints(), e.offsetX, e.offsetY, 8);
+      if (h) cur = XF_CURSOR[h] || "";
+    }
+    if (cur !== S.xfCursor){
+      S.xfCursor = cur;
+      view.style.cursor = cur || (S.tool === "pan" ? "grab" : "crosshair");
+    }
+    if (changed) draw(); else hud(); return;
+  }
+  if (drag.kind === "pan"){
+    S.view.tx = drag.tx + (e.offsetX - drag.x);
+    S.view.ty = drag.ty + (e.offsetY - drag.y);
+    draw();
+  } else if (drag.kind === "maybe"){
+    // 4 screen px of slop, so a shaky click is still a click
+    if (Math.abs(sx - drag.x0) * S.view.s > 4 || Math.abs(sy - drag.y0) * S.view.s > 4){
+      drag = {kind: "marquee", x0: drag.x0, y0: drag.y0, x1: sx, y1: sy,
+              add: drag.ctrl, base: drag.base, startCell: drag.startCell,
+              shift: drag.shift, ctrl: drag.ctrl};
+      S.marquee = {x0: drag.x0, y0: drag.y0, x1: sx, y1: sy};
+    }
+    draw();
+  } else if (drag.kind === "marquee"){
+    S.marquee = {x0: drag.x0, y0: drag.y0, x1: sx, y1: sy};
+    draw();
+  } else if (drag.kind === "paint"){
+    if (ci >= 0) addStrokePoint(sx, sy, ci);
+    draw();
+  } else if (drag.kind === "xform"){
+    // The pointer in the cell's own pixels, which is the space the box, its
+    // handles and its pivot are all defined in. No inverse of the live transform
+    // is needed here, and that is the point of the gesture design: every handle
+    // pivots on a point that a pure scale, a pure rotation or a pure move leaves
+    // exactly where it was -- the opposite corner, the centre -- so a delta
+    // measured in the *untransformed* space stays the delta the op needs for the
+    // whole drag.
+    const {cw, ch, cols} = SHEET();
+    const lx = sx - (drag.cell % cols) * cw, ly = sy - Math.floor(drag.cell / cols) * ch;
+    const p = drag.pivot;
+    const L = S.xformLive;
+    if (L){
+      if (drag.handle === "move"){
+        L.dx = lx - drag.start[0];
+        L.dy = ly - drag.start[1];
+      } else if (drag.handle === "rot"){
+        // A positive `ang` turns the art counter-clockwise on screen (cv2's
+        // matrix, see xfPt). The pointer's angle about the pivot grows the other
+        // way, because image y points down -- so it is press-angle minus
+        // current-angle, wrapped to the shortest way round so dragging past the
+        // half-turn does not spin the art back through 350 degrees.
+        let a = drag.a0 - Math.atan2(ly - p[1], lx - p[0]);
+        while (a > Math.PI) a -= 2 * Math.PI;
+        while (a < -Math.PI) a += 2 * Math.PI;
+        L.ang = a * 180 / Math.PI;
+        L.f = 1; L.dx = 0; L.dy = 0;
+      } else {
+        // Distance from the still corner, as a ratio of where the handle started
+        // -- so the handle stays under the pointer at any starting box size.
+        // Floored rather than clamped to zero: the op refuses a scale of 0, and
+        // a preview that shows the art gone while the release is guaranteed to
+        // refuse it would be a lie either way.
+        const d = Math.hypot(lx - p[0], ly - p[1]);
+        L.f = drag.d0 > 1e-6 ? Math.max(0.02, d / drag.d0) : 1;
+        L.ang = 0; L.dx = 0; L.dy = 0;
+      }
+      draw();
+    }
+  }
+});
+
+async function endDrag(){
+  if (!drag) return;
+  const d = drag; drag = null;
+  if (d.kind === "marquee" && S.marquee){
+    const m = S.marquee; S.marquee = null;
+    const {cw, ch, cols, rows} = SHEET();
+    const c0 = Math.max(0, Math.floor(Math.min(m.x0,m.x1)/cw));
+    const c1 = Math.min(cols-1, Math.floor(Math.max(m.x0,m.x1)/cw));
+    const r0 = Math.max(0, Math.floor(Math.min(m.y0,m.y1)/ch));
+    const r1 = Math.min(rows-1, Math.floor(Math.max(m.y0,m.y1)/ch));
+    // rebuild from the base each time, so a ctrl-drag adds to the selection it
+    // started from rather than to whatever the last drag left behind
+    S.sel = new Set(d.add ? d.base : []);
+    for (let r = r0; r <= r1; r++)
+      for (let c = c0; c <= c1; c++){
+        const i = r*cols + c;
+        if (i < S.doc.n) S.sel.add(i);
+      }
+    if (S.sel.size) S.anchorCell = Math.min(...S.sel);
+    syncSel();
+  } else if (d.kind === "maybe"){
+    // the pointer never moved far enough to be a drag, so it was a click
+    const ci = d.startCell;
+    if (d.ctrl){
+      if (S.sel.has(ci)) S.sel.delete(ci); else S.sel.add(ci);
+      S.anchorCell = ci;
+    } else if (d.shift){
+      // The anchor stays where it was: repeated shift-clicks must keep ranging
+      // from the same cell, not from the previous shift-click's target.
+      selectRange(S.anchorCell, ci);
+    } else {
+      S.sel.clear(); S.sel.add(ci); S.anchorCell = ci; S.cur = ci;
+    }
+    syncSel(); renderPreview();
+  } else if (d.kind === "paint"){
+    await commitStroke();
+  } else if (d.kind === "xform"){
+    // One drag, one op. The live transform is cleared *before* the commit, so a
+    // refusal cannot leave a preview on screen showing art the document does not
+    // have -- and the op's own note goes to #status either way.
+    const L = S.xformLive;
+    S.xformLive = null;
+    if (L) await commitXform(L);
+  }
+  draw();
+}
+view.addEventListener("pointerup", endDrag);
+// Also on window: if pointer capture was refused, a release outside the canvas
+// never reaches it, and the drag (and a paint stroke) would be left pending.
+window.addEventListener("pointerup", endDrag);
+// A cancelled pointer (touch scroll claimed the gesture, a pen left range) must
+// end the drag too; otherwise the next press starts from a stale drag.
+window.addEventListener("pointercancel", e => {
+  if (drag && drag.kind === "paint"){ commitStroke(); }
+  drag = null; S.marquee = null; S.stroke = [];
+  draw();
+});
+view.addEventListener("contextmenu", e => e.preventDefault());
+view.addEventListener("wheel", e => {
+  if (!S.doc) return;
+  e.preventDefault();
+  zoomAt(e.deltaY < 0 ? 1.12 : 1/1.12, e.offsetX, e.offsetY);
+}, {passive: false});
+view.addEventListener("pointerleave", () => { S.hover = -1; draw(); });
+
+// --------------------------------------------------------------- painting
+function brushRGBA(){
+  const hex = $("brushColor").value;
+  const r = parseInt(hex.slice(1,3),16), g = parseInt(hex.slice(3,5),16),
+        b = parseInt(hex.slice(5,7),16);
+  const a = Math.max(0, Math.min(255, Number($("brushAlpha").value) || 0));
+  return [r,g,b,a];
+}
+// The size box is in SCREEN pixels, not sheet pixels.
+//
+// Read as sheet pixels it is unusable on a big sheet: the default 6 means a
+// 6-pixel mark on a 15872-pixel-wide sheet, which at the fitted zoom (0.054 on
+// the walk sheet) is 0.32 px on screen. The stroke lands, the cell hash changes,
+// the journal records "paint" -- and the user sees nothing at all, because there
+// is nothing to see. Dividing by the zoom here keeps the stroke buffer, the live
+// preview and the rasteriser all in sheet coordinates, which is what
+// commitStroke needs, while making "6px" mean 6px to the person holding the
+// mouse.
+function brushRadius(){
+  const s = Math.max(1e-6, S.view.s);
+  const screen = Math.max(1, Number($("brushSize").value) || 6);
+  return Math.max(0.5, (screen / 2) / s);
+}
+function addStrokePoint(sx, sy, ci){
+  const r = brushRadius();
+  const rgba = brushRGBA();
+  const mode = S.strokeTool === "erase" ? "erase" : "blend";
+  const preview = mode === "erase"
+    ? "rgba(180,35,42,.35)"
+    : "rgba(" + rgba[0] + "," + rgba[1] + "," + rgba[2] + "," +
+      (Math.max(rgba[3], 40) / 255) + ")";
+  const last = S.stroke[S.stroke.length - 1];
+  if (last){
+    // interpolate so a fast drag does not leave gaps
+    const dist = Math.hypot(sx - last.x, sy - last.y);
+    const steps = Math.min(64, Math.floor(dist / Math.max(1, r * 0.6)));
+    for (let k = 1; k <= steps; k++){
+      const t = k / (steps + 1);
+      S.stroke.push({x: last.x + (sx - last.x) * t, y: last.y + (sy - last.y) * t,
+                     r, rgba, mode, preview});
+    }
+  }
+  S.stroke.push({x: sx, y: sy, r, rgba, mode, preview});
+  if (drag && drag.touched) drag.touched.add(ci);
+}
+async function commitStroke(){
+  const pts = S.stroke;
+  S.stroke = [];
+  if (!pts.length || !S.doc) return;
+  const {cw, ch, cols, rows} = SHEET();
+  const mode = pts[0].mode;
+  const pad = 2;
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const p of pts){
+    x0 = Math.min(x0, p.x - p.r); y0 = Math.min(y0, p.y - p.r);
+    x1 = Math.max(x1, p.x + p.r); y1 = Math.max(y1, p.y + p.r);
+  }
+  x0 = Math.max(0, Math.floor(x0) - pad); y0 = Math.max(0, Math.floor(y0) - pad);
+  x1 = Math.min(cols*cw, Math.ceil(x1) + pad); y1 = Math.min(rows*ch, Math.ceil(y1) + pad);
+  if (x1 <= x0 || y1 <= y0) return;
+
+  const c0 = Math.floor(x0/cw), c1 = Math.floor((x1-1)/cw);
+  const r0 = Math.floor(y0/ch), r1 = Math.floor((y1-1)/ch);
+  busy(true);
+  try {
+    for (let r = r0; r <= r1; r++){
+      for (let c = c0; c <= c1; c++){
+        const i = r*cols + c;
+        if (i >= S.doc.n) continue;
+        const bx = c*cw, by = r*ch;
+        const ox0 = Math.max(x0, bx), oy0 = Math.max(y0, by);
+        const ox1 = Math.min(x1, bx+cw), oy1 = Math.min(y1, by+ch);
+        const w = ox1 - ox0, h = oy1 - oy0;
+        if (w <= 0 || h <= 0) continue;
+        // rasterise the stroke into a small canvas. willReadFrequently: this
+        // canvas is drawn once and then read back with getImageData, never
+        // shown -- and it is built per cell per stroke, so leaving the default
+        // made every pencil stroke allocate a GPU-backed surface, upload the
+        // arcs to it and read them back down. Chrome says so in the console
+        // ("multiple readback operations using getImageData are faster with the
+        // willReadFrequently attribute set to true"), which is the warning this
+        // is here to answer.
+        const cv = document.createElement("canvas");
+        cv.width = w; cv.height = h;
+        const cc = cv.getContext("2d", {willReadFrequently: true});
+        cc.save();
+        cc.translate(-ox0, -oy0);
+        for (const p of pts){
+          if (p.x + p.r < ox0 || p.x - p.r > ox1) continue;
+          if (p.y + p.r < oy0 || p.y - p.r > oy1) continue;
+          cc.fillStyle = "rgba(" + p.rgba[0] + "," + p.rgba[1] + "," + p.rgba[2] + "," +
+                         (p.rgba[3]/255) + ")";
+          cc.beginPath(); cc.arc(p.x, p.y, p.r, 0, Math.PI*2); cc.fill();
+        }
+        cc.restore();
+        const data = cc.getImageData(0, 0, w, h).data;
+        const b64 = b64bytes(new Uint8Array(data.buffer));
+        const res = await api("/api/editor/" + S.doc.id + "/op",
+          {name: "paint", sel: [i], args: {cell: i, x: ox0 - bx, y: oy0 - by,
+           w, h, mode, data: b64}});
+        applyDoc(res.doc);
+        if (res.changed.length) await refreshCells(res.changed);
+      }
+    }
+  } catch(ex){
+    // api() throws on {ok:false}, so a refusal lands HERE -- the `if (res.ok)`
+    // this replaced was unreachable. And there was no catch at all before, so
+    // every failed paint became an unhandled rejection: the stroke vanished and
+    // nothing was said anywhere.
+    toast(ex.message);
+    $("status").textContent = ex.message;
+  } finally {
+    busy(false); draw();
+  }
+}
+function b64bytes(u8){
+  let s = "";
+  const CH = 0x8000;
+  for (let i = 0; i < u8.length; i += CH)
+    s += String.fromCharCode.apply(null, u8.subarray(i, i + CH));
+  return btoa(s);
+}
+
+// ------------------------------------------------------- frame clipboard
+// Copy / paste / clear whole frames. The clipboard lives in the page, not in a
+// hidden server field, so "copy frame A, clear frame A, paste into frame B"
+// pastes the frame as it was when it was copied.
+let CLIP = [];                       // [{w, h, b64: PNG bytes}]
+
+function targetCells(){
+  if (!S.doc) return [];
+  return S.sel.size ? selArr() : [S.cur];
+}
+// Both paste and clear replace whole frames through the Paint op: "png" mode
+// for a copied frame (exact straight RGBA), "set" with zeroed pixels for clear.
+async function paintCells(idxs, argsFor, what){
+  if (!S.doc){ toast("open a sheet first"); return; }
+  const {cw, ch} = SHEET();
+  busy(true);
+  try {
+    for (let k = 0; k < idxs.length; k++){
+      const i = idxs[k];
+      if (i < 0 || i >= S.doc.n) continue;
+      const a = argsFor(k);
+      if (!a) continue;
+      const res = await api("/api/editor/" + S.doc.id + "/op",
+        {name: "paint", sel: [i], args: Object.assign(
+          {cell: i, x: 0, y: 0, w: cw, h: ch}, a)});
+      applyDoc(res.doc);
+      if (res.changed.length) await refreshCells(res.changed);
+    }
+    const msg = what + " " + idxs.length + " frame" + (idxs.length === 1 ? "" : "s");
+    $("status").textContent = msg;
+    toast(msg);
+  } catch(ex){
+    toast(ex.message); $("status").textContent = ex.message;
+  } finally { busy(false); draw(); }
+}
+async function copyCells(){
+  const idxs = targetCells();
+  if (!idxs.length){ toast("open a sheet first"); return; }
+  try {
+    const {cw, ch} = SHEET();
+    const got = [];
+    for (const i of idxs){
+      const r = await fetch("/api/editor/" + S.doc.id + "/cell/" + i + ".png",
+                            {cache: "no-store"});
+      if (!r.ok) continue;
+      got.push({w: cw, h: ch, b64: b64bytes(new Uint8Array(await r.arrayBuffer()))});
+    }
+    CLIP = got;
+    toast(CLIP.length ? "copied " + CLIP.length + " frame" +
+          (CLIP.length === 1 ? "" : "s") : "nothing to copy");
+  } catch(ex){ toast(ex.message); }
+}
+async function pasteCells(){
+  if (!CLIP.length){ toast("clipboard is empty \u2014 copy a frame first"); return; }
+  if (!S.doc){ toast("open a sheet first"); return; }
+  // One copied frame pastes into every target; several cycle through them.
+  await paintCells(targetCells(),
+    k => ({mode: "png", data: CLIP[k % CLIP.length].b64}), "pasted");
+}
+async function clearCells(){
+  const idxs = targetCells();
+  if (!idxs.length){ toast("open a sheet first"); return; }
+  const {cw, ch} = SHEET();
+  const zero = b64bytes(new Uint8Array(cw * ch * 4));
+  await paintCells(idxs, () => ({mode: "set", data: zero}), "cleared");
+}
+$("copyFrame").onclick = copyCells;
+$("pasteFrame").onclick = pasteCells;
+$("clearFrame").onclick = clearCells;
+function pickColour(ci, px, py){
+  const im = S.img.get(ci);
+  if (!im){ toast("cell not loaded yet"); return; }
+  const cv = document.createElement("canvas");
+  cv.width = im.naturalWidth; cv.height = im.naturalHeight;
+  const c = cv.getContext("2d", {willReadFrequently: true});
+  c.drawImage(im, 0, 0);
+  const d = c.getImageData(Math.max(0,Math.min(cv.width-1, px|0)),
+                           Math.max(0,Math.min(cv.height-1, py|0)), 1, 1).data;
+  const hex = "#" + [d[0],d[1],d[2]].map(v => v.toString(16).padStart(2,"0")).join("");
+  $("brushColor").value = hex;
+  $("brushAlpha").value = d[3];
+  toast("picked " + hex + " a=" + d[3]);
+}
+
+// ------------------------------------------------------------------ tools
+function setTool(t){
+  S.tool = t;
+  for (const [id, name] of [["toolSelect","select"],["toolPan","pan"],
+                            ["toolPencil","pencil"],["toolErase","erase"],
+                            ["toolPick","pick"]])
+    $(id).classList.toggle("on", name === t);
+  view.style.cursor = t === "pan" ? "grab" : (t === "select" ? "crosshair" : "crosshair");
+  draw();
+}
+// The box is a mode of the select tool rather than a sixth tool: its handles
+// only mean anything while the select tool is active, and a "box tool" that
+// could not select would be a worse select tool. Turning it on switches to
+// select, so the button is never on with nothing to grab.
+function setXform(on){
+  S.xform = !!on;
+  S.xformLive = null;
+  $("toolBox").classList.toggle("on", S.xform);
+  if (S.xform && S.tool !== "select") setTool("select");
+  draw();
+}
+$("toolSelect").onclick = () => setTool("select");
+$("toolPan").onclick = () => setTool("pan");
+$("toolPencil").onclick = () => setTool("pencil");
+$("toolErase").onclick = () => setTool("erase");
+$("toolPick").onclick = () => setTool("pick");
+$("toolBox").onclick = () => setXform(!S.xform);
+
+// ------------------------------------------------------------------- ops
+let OPSCHEMA = [];
+let SNAP = null;        // the Snap Pixels panel's live state, see snapNode()
+let SNAP_GROUP = null;  // its <details> group, so the whole thing can be gated
+async function loadOps(){
+  const d = await api("/api/editor/ops");
+  OPSCHEMA = d.ops;
+  const groups = {};
+  for (const o of OPSCHEMA) (groups[o.group] = groups[o.group] || []).push(o);
+  const host = $("ops");
+  host.innerHTML = "";
+  // Pixel art leads: Snap Pixels is the first thing a messy AI sheet needs, so
+  // it sits above Transform rather than in registry order.
+  const ORDER = ["Pixel art", "Transform", "Alpha", "Matte repair", "Colour",
+                 "Frames", "Layout", "Paint", "Meta"];
+  const rank = g => { const i = ORDER.indexOf(g); return i < 0 ? 99 : i; };
+  for (const g of Object.keys(groups).sort((a, b) => rank(a) - rank(b))){
+    const det = document.createElement("details");
+    det.className = "opgroup";
+    // Pixel art is the one group that opens by default; Transform and Matte
+    // repair start folded, so the panel is short until they are reached for.
+    if (g === "Pixel art") det.open = true;
+    const sum = document.createElement("summary");
+    sum.textContent = g;
+    det.appendChild(sum);
+    if (groups[g].some(o => o.name === "snap_pixels")) SNAP_GROUP = det;
+    for (const o of groups[g]) det.appendChild(opNode(o));
+    host.appendChild(det);
+  }
+  updateSnapGate();
+}
+// The Pixelize (outline) pixel-size box, so the fits hint can read what is
+// typed as well as what fits. Set when the op's controls are built.
+let poePixelEl = null;
+function renderPoeFits(){
+  const box = $("poeFits");
+  if (!box) return;
+  if (!S.doc){ box.textContent = "open a sheet to list the sizes that fit it"; return; }
+  const {cw, ch} = SHEET();
+  const fits = [];
+  for (let k = 2; k <= 64; k++) if (cw % k === 0 && ch % k === 0) fits.push(k);
+  let line = fits.length
+    ? "fits " + cw + "\u00d7" + ch + ": " + fits.join(", ")
+    : "nothing in 2..64 divides " + cw + "\u00d7" + ch + " -- resize the cell first";
+  const cur = poePixelEl ? parseInt(poePixelEl.value, 10) : 0;
+  if (cur >= 1 && (cw % cur !== 0 || ch % cur !== 0))
+    line += "  \u00b7  " + cur + " does not fit";
+  box.textContent = line;
+}
+function opNode(o){
+  if (o.name === "snap_pixels") return snapNode(o);
+  const det = document.createElement("details");
+  det.className = "op";
+  const sum = document.createElement("summary");
+  sum.textContent = o.label;
+  sum.title = o.help || "";
+  det.appendChild(sum);
+  const body = document.createElement("div");
+  body.className = "opbody";
+  const inputs = {};
+  for (const a of o.args){
+    const lab = document.createElement("label");
+    lab.textContent = a.label || a.k;
+    body.appendChild(lab);
+    let el;
+    if (a.t === "bool"){
+      // A <label>, not a <div> -- same reason as the panels' own checkboxes:
+      // the words beside a bare checkbox in a <div> are not part of the control,
+      // so clicking them does nothing and the box looks broken. Wrapping the
+      // input makes the whole row toggle it with no handler.
+      const wrap = document.createElement("label");
+      wrap.className = "chk";
+      el = document.createElement("input"); el.type = "checkbox";
+      el.checked = !!a.d;
+      wrap.appendChild(el);
+      const sp = document.createElement("span"); sp.textContent = a.label || a.k;
+      wrap.appendChild(sp);
+      body.removeChild(lab);
+      body.appendChild(wrap);
+    } else if (a.t === "choice"){
+      el = document.createElement("select");
+      for (const op of (a.opts || [])) {
+        const op2 = document.createElement("option");
+        op2.value = op; op2.textContent = op;
+        el.appendChild(op2);
+      }
+      el.value = a.d;
+      body.appendChild(el);
+    } else if (a.t === "color"){
+      el = document.createElement("input"); el.type = "color"; el.value = a.d;
+      body.appendChild(el);
+    } else if (a.t === "text"){
+      if (a.k === "palette"){
+        // A palette is picked, not typed -- and picked with the same control the
+        // Snap Pixels panel uses, so a preset chosen in one panel is the preset
+        // chosen in the other. The control appends its own label, so the one the
+        // loop just added comes back off; inputs["palette"] is the hidden input
+        // carrying the hex list, which runOp() reads like any other form value.
+        body.removeChild(lab);
+        el = paletteControl(body, {label: lab.textContent}).input;
+      } else {
+        el = document.createElement("input"); el.type = "text"; el.value = a.d;
+        body.appendChild(el);
+      }
+    } else {
+      el = document.createElement("input");
+      el.type = "number";
+      el.value = a.d;
+      if (a.step) el.step = a.step;
+      if (a.min !== undefined) el.min = a.min;
+      if (a.max !== undefined) el.max = a.max;
+      body.appendChild(el);
+      // Pixelize (outline) refuses a pixel size that does not divide the cell,
+      // so its field gets a live list of the sizes that fit this sheet --
+      // computed here, not fetched, because it is pure arithmetic on the cell
+      // size (the same 2..64 rule the bridge refuses by).
+      if (o.name === "pixelize_oe" && a.k === "pixel_size"){
+        const fits = document.createElement("div");
+        fits.className = "hint";
+        fits.id = "poeFits";
+        body.appendChild(fits);
+        poePixelEl = el;
+        el.addEventListener("input", renderPoeFits);
+        renderPoeFits();
+      }
+    }
+    inputs[a.k] = el;
+  }
+  if (o.help){
+    const h = document.createElement("div");
+    h.className = "hint"; h.textContent = o.help;
+    body.appendChild(h);
+  }
+  const btn = document.createElement("button");
+  btn.textContent = "Apply";
+  btn.className = "sm primary";
+  btn.style.marginTop = "7px";
+  btn.onclick = () => runOp(o, inputs, btn);
+  body.appendChild(btn);
+  det.appendChild(body);
+  return det;
+}
+
+// --------------------------------------------------------------- palettes
+// The snapper can take a fixed palette instead of auto k-means. This is the
+// same preset list the spritefusion web tool ships, so a palette picked here is
+// the palette picked there. A PNG can also be imported as a custom palette.
+function rgbCube(levels){
+  const out = [];
+  for (const r of levels)
+    for (const g of levels)
+      for (const b of levels)
+        out.push([r, g, b].map(v => v.toString(16).padStart(2, "0")).join(""));
+  return out;
+}
+const PALETTES = [
+  { name: "NES", colors: ["7C7C7C","0000FC","0000BC","4428BC","940084","A80020","A81000","881400","503000","007800","006800","005800","004058","000000","BCBCBC","0078F8","0058F8","6844FC","D800CC","E40058","F83800","E45C10","AC7C00","00B800","00A800","00A844","008888","F8F8F8","3CBCFC","6888FC","9878F8","F878F8","F85898","F87858","FCA044","F8B800","B8F818","58D854","58F898","00E8D8","787878","FCFCFC","A4E4FC","B8B8F8","D8B8F8","F8B8F8","F8A4C0","F0D0B0","FCE0A8","F8D878","D8F878","B8F8B8","B8F8D8","00FCFC","F8D8F8"] },
+  { name: "SNES", colors: ["000000","2C2C2C","585858","888888","B8B8B8","E8E8E8","FFFFFF","4C0A00","8C1800","CC3410","F86838","F8A060","6C3C00","A86C0C","E0A020","F8D060","F8F0A0","3C3000","6C6000","A0A000","D0D040","F0F080","003800","006800","00A020","48D048","A0F080","00004C","003C8C","0058D0","3C90F8","80D8F8"] },
+  { name: "Game Boy", colors: ["0F380F","306230","8BAC0F","9BBC0F"] },
+  { name: "Game Boy Color", colors: ["000000","FFFFFF","7B7B7B","B5B5B5","003C64","0064B4","0090F0","58C8F8","640000","B40000","F83C3C","F8A0A0","4C2600","985400","F8A800","F8E058","004C00","009800","50C800","B8F050","1C1C8C","4C50D8","98A0F8","6C004C","C00088","F85CB8","24406C","8C6028","F8D0A0","3C3C3C","6C6C6C"] },
+  { name: "Virtual Boy", colors: ["000000","550000","AA0000","FF0000"] },
+  { name: "Pok\u00e9mon SGB", colors: ["181010","84739c","f7b58c","ffefff"] },
+  { name: "Mario Paint", colors: ["ff0000","ff8200","fffb00","00fb00","008242","00fbff","0000ff","c64121","846100","ffc384","c600c6","000000","848284","c6c3c6","fffbff"] },
+  { name: "Master System", colors: rgbCube([0, 85, 170, 255]) },
+  { name: "Mega Drive / Genesis", colors: ["2b120d","9f1211","fc1400","fc6a00","fcfc00","000000","330445","9c0c9c","ff099d","00072c","040085","0000ff","0066ff","67cdfc","004849","067826","00c908","52ff00","c6f022","352c2e","754944","ad5950","f6757a","fac59b","693623","b0572b","e98e42","fcb448","fffcff","666688","9892ad","b8b8d1","ddd9e6","fcfcfc"] },
+  { name: "C64", colors: ["000000","626262","898989","adadad","ffffff","9f4e44","cb7e75","6d5412","a1683c","c9d487","9ae29b","5cab5e","6abfc6","887ecb","50459b","a057a3"] },
+  { name: "ZX Spectrum", colors: ["000000","0000d8","0000ff","d80000","ff0000","d800d8","ff00ff","00d800","00ff00","00d8d8","00ffff","d8d800","ffff00","d8d8d8","ffffff"] },
+  { name: "CGA", colors: ["000000","555555","aaaaaa","ffffff","0000aa","5555ff","00aa00","55ff55","00aaaa","55ffff","aa0000","ff5555","aa00aa","ff55ff","aa5500","ffff55"] },
+  { name: "EGA", colors: ["ffffff","d5d5d5","aaaaaa","7f7f7f","555555","2a2a2a","000001","2a0000","550000","7f0000","aa0000","ff0000","ff7f7f","ffaaaa","ffaa7f","d57f55","984f08","552a00","854115","ce581d","ff5500","ff7f00","ffaa00","ffd400","ffff00","d5ff00","aaff00","86af17","7f7f00","555500","2a2a00","003500","007a00","00c600","0bff0b","6ef7b2","a0f4d1","aaffff","00ffff","00c2c6","007f7f","005555","018494","0199ca","025398","042c72","000055","0000aa","0000ff","2d2df7","5757ff","aaaaff","cdabfb","a461ff","5500aa","2a002a","550055","7f007f","aa00aa","ff00ff","ff82ff","ffaad5","ffd5d5","fbeded"] },
+  { name: "Amstrad CPC", colors: ["040404","808080","ffffff","800000","ff0000","ff8080","ff7f00","ffff80","ffff00","808000","008000","01ff00","80ff00","80ff80","01ff80","008080","01ffff","80ffff","0080ff","0000ff","00007f","7f00ff","8080ff","ff80ff","ff00ff","ff0080","800080"] },
+  { name: "MSX", colors: ["000000","cacaca","ffffff","b75e51","d96459","fe877c","cac15e","ddce85","3ca042","40b64a","73ce7c","5955df","7e75f0","64daee","b565b3"] },
+  { name: "Apple II", colors: ["000000","515c16","843d52","ea7d27","514888","e85def","f5b7c9","006752","00c82c","919191","c9d199","00a6f0","98dbc9","c8c1f7","ffffff"] },
+  { name: "PICO-8", colors: ["000000","1D2B53","7E2553","008751","AB5236","5F574F","C2C3C7","FFF1E8","FF004D","FFA300","FFEC27","00E436","29ADFF","83769C","FF77A8","FFCCAA"] },
+  { name: "TIC-80", colors: ["000000","1D2B53","7E2553","008751","AB5236","5F574F","C2C3C7","FFF1E8","FF004D","FFA300","FFEC27","00E436","29ADFF","83769C","FF77A8","FFCCAA"] },
+  { name: "MacPaint", colors: ["8bc8fe","051b2c"] },
+  { name: "Intellivision", colors: ["0c0005","a7a8a8","fffcff","ff3e00","ffa600","faea27","00780f","00a720","6ccd30","002dff","5acbff","bd95ff","c81a7d","ff3276","3c5800","c9d464"] },
+];
+// Auto (null colours) shows an empty swatch; the theme's own border colour
+// stands in so it does not read as a black palette.
+function drawPalSwatch(canvas, colors){
+  const ctx = canvas.getContext("2d");
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  const n = colors ? colors.length : 0;
+  if (!n){
+    ctx.fillStyle = getComputedStyle(document.documentElement)
+      .getPropertyValue("--bd2").trim() || "#888";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    return;
+  }
+  const w = canvas.width;
+  if (n > w){                       // too many to draw one stripe each
+    for (let x = 0; x < w; x++){
+      ctx.fillStyle = "#" + colors[Math.floor((x * n) / w)];
+      ctx.fillRect(x, 0, 1, canvas.height);
+    }
+    return;
+  }
+  for (let i = 0; i < n; i++){
+    const x0 = Math.floor((i * w) / n);
+    const x1 = Math.max(x0 + 1, Math.floor(((i + 1) * w) / n));
+    ctx.fillStyle = "#" + colors[i];
+    ctx.fillRect(x0, 0, x1 - x0, canvas.height);
+  }
+}
+function makePalSwatch(colors){
+  const c = document.createElement("canvas");
+  c.width = 48; c.height = 16;
+  drawPalSwatch(c, colors);
+  return c;
+}
+function palColors(sel){
+  if (sel.type === "preset") return PALETTES[sel.index].colors;
+  if (sel.type === "custom") return sel.colors;
+  return null;
+}
+function palName(sel){
+  if (sel.type === "preset") return PALETTES[sel.index].name;
+  if (sel.type === "custom") return sel.name;
+  return "Auto (k-means)";
+}
+
+// The palette control: a swatch button that opens Auto / preset / PNG-imported
+// palettes, and a hidden input carrying the chosen hex list so the generic
+// runOp() can read it like any other form value.
+//
+// It lived inline in the Snap Pixels panel until Pixelate (mesh) needed the same
+// thing -- "add same palette from snap pixel to pixelate (mesh)". One
+// implementation with two callers, because a second copy would drift: the preset
+// list, the swatch drawing and the PNG import are the parts that matter, and a
+// palette picked in one panel has to be the palette picked in the other.
+function paletteControl(body, opts){
+  opts = opts || {};
+  const onChange = opts.onChange || (() => {});
+  const lab = document.createElement("label");
+  lab.textContent = opts.label || "palette";
+  body.appendChild(lab);
+  const input = document.createElement("input");
+  input.type = "hidden";
+  body.appendChild(input);
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "palbtn";
+  btn.title = "auto k-means, a preset console palette, or a palette image";
+  const canvas = document.createElement("canvas");
+  canvas.width = 48; canvas.height = 16;
+  const label = document.createElement("span");
+  label.className = "pname";
+  const caret = document.createElement("span");
+  caret.className = "caret"; caret.textContent = "\u25be";
+  btn.append(canvas, label, caret);
+  body.appendChild(btn);
+  // Import errors land beside the palette rather than in whichever status line
+  // the host panel happens to have, so the control works in both panels.
+  const info = document.createElement("div");
+  info.className = "hint";
+  info.hidden = true;
+  body.appendChild(info);
+  const panel = document.createElement("div");
+  panel.className = "palpanel";
+  panel.hidden = true;
+  document.body.appendChild(panel);
+  const file = document.createElement("input");
+  file.type = "file"; file.accept = "image/png,image/jpeg";
+  file.hidden = true;
+  document.body.appendChild(file);
+  const sel = {type: "auto"};
+  const refresh = () => {
+    label.textContent = palName(sel);
+    drawPalSwatch(canvas, palColors(sel));
+    input.value = (palColors(sel) || []).join(",");
+  };
+  const afterPick = () => {
+    panel.hidden = true;
+    refresh();
+    onChange();
+  };
+  const build = () => {
+    panel.innerHTML = "";
+    const row = (colors, name, active, pick) => {
+      const r = document.createElement("div");
+      r.className = "palrow" + (active ? " active" : "");
+      r.appendChild(makePalSwatch(colors));
+      const nm = document.createElement("span");
+      nm.textContent = name;
+      r.appendChild(nm);
+      if (colors){
+        const ct = document.createElement("span");
+        ct.className = "count"; ct.textContent = colors.length;
+        r.appendChild(ct);
+      }
+      r.onclick = pick;
+      panel.appendChild(r);
+    };
+    row(null, "Auto (k-means)", sel.type === "auto", () => {
+      sel.type = "auto"; delete sel.index; delete sel.colors;
+      afterPick();
+    });
+    PALETTES.forEach((p, i) => row(p.colors, p.name,
+      sel.type === "preset" && sel.index === i, () => {
+        sel.type = "preset"; sel.index = i; delete sel.colors;
+        afterPick();
+      }));
+    const imp = document.createElement("div");
+    imp.className = "palimport";
+    imp.textContent = "Import palette PNG\u2026";
+    imp.onclick = () => { panel.hidden = true; file.click(); };
+    panel.appendChild(imp);
+  };
+  const place = () => {
+    // Fixed, measured off the button: the side column scrolls and would clip a
+    // panel nested inside it.
+    const r = btn.getBoundingClientRect();
+    const width = Math.max(240, r.width);
+    panel.style.width = width + "px";
+    panel.style.left = Math.max(6,
+      Math.min(r.left, window.innerWidth - width - 6)) + "px";
+    panel.style.top = (r.bottom + 4) + "px";
+  };
+  btn.onclick = (e) => {
+    e.stopPropagation();
+    if (panel.hidden){
+      build(); place(); panel.hidden = false;
+    } else {
+      panel.hidden = true;
+    }
+  };
+  panel.addEventListener("click", (e) => e.stopPropagation());
+  document.addEventListener("click", () => { panel.hidden = true; });
+  // Capture phase, so this sees every scroll in the document -- including the
+  // panel's own list, which is itself scrollable (max-height + overflow). Closing
+  // on those made the palette unscrollable: the first drag on its scrollbar
+  // closed it, which is exactly how it was reported.
+  //
+  // Only a scroll that could have moved the *button* closes the panel. The panel
+  // is fixed and anchored to the button's rect, so it has to go when the button
+  // moves under it -- and the button moves only when one of its own ancestors
+  // scrolls. Closing on every outside scroll made the dropdown look broken
+  // whenever the player was running: markTimelineCurrent() calls scrollIntoView()
+  // on the timeline strip to follow the playhead, and that is a scroll of an
+  // element in the other column, which cannot move this button at all. Reported
+  // as "when play buton active pallet drop downs not opening" -- the click did
+  // open the panel, and the strip's own auto-scroll shut it again before it
+  // could be seen.
+  window.addEventListener("scroll", (e) => {
+    if (panel.contains(e.target)) return;
+    const t = e.target;
+    // Only a scroll that could have moved the *button* closes the panel, so
+    // `t.contains(btn)` is the whole test. There is deliberately no separate
+    // clause for the viewport: a viewport scroll reports `document` as its
+    // target, and `document.contains(btn)` is true, so it is already covered.
+    // That was measured rather than assumed -- a forced document scroll arrives
+    // with target `document` and never with `document.scrollingElement` (which
+    // is `<html>`), so a clause naming that element could not have fired.
+    if (t.contains && t.contains(btn)) panel.hidden = true;
+  }, true);
+  file.onchange = async () => {
+    const f = file.files[0];
+    file.value = "";
+    if (!f) return;
+    info.hidden = true;
+    try {
+      const bmp = await createImageBitmap(f);
+      const c = document.createElement("canvas");
+      c.width = bmp.width; c.height = bmp.height;
+      const cx = c.getContext("2d");
+      cx.drawImage(bmp, 0, 0);
+      const data = cx.getImageData(0, 0, c.width, c.height).data;
+      const counts = new Map();
+      for (let i = 0; i < data.length; i += 4){
+        if (data[i + 3] === 0) continue;
+        const key = (data[i] << 16) | (data[i + 1] << 8) | data[i + 2];
+        counts.set(key, (counts.get(key) || 0) + 1);
+      }
+      const colors = [...counts.entries()].sort((a, b) => b[1] - a[1])
+        .slice(0, 256)
+        .map(([k]) => k.toString(16).padStart(6, "0").toUpperCase());
+      if (!colors.length){
+        info.textContent = "palette PNG has no opaque colours";
+        info.hidden = false;
+        return;
+      }
+      sel.type = "custom";
+      sel.name = "Imported (" + colors.length + ")";
+      sel.colors = colors;
+      afterPick();
+    } catch(ex){
+      info.textContent = "palette import failed: " + ex.message;
+      info.hidden = false;
+    }
+  };
+  refresh();
+  return {input, sel, refresh};
+}
+
+// Snap Pixels is the one op with bespoke UI. The snapper exposes a colour
+// count, a pixel-size override and a palette, and the whole point of it is
+// seeing the grid it picks -- the generic op form would render three inputs and
+// no preview. It is also gated on a selection (the panel appears once a frame
+// is picked), because a pixel-perfect result on "all frames" is not a thing
+// anyone reaches for first.
+function snapNode(o){
+  const det = document.createElement("details");
+  det.className = "op";
+  // Left open: the preview is the point of the panel, and a collapsed <details>
+  // has no width, so a fit computed while it is closed would be meaningless.
+  det.open = true;
+  const sum = document.createElement("summary");
+  sum.textContent = o.label;
+  sum.title = o.help || "";
+  det.appendChild(sum);
+  const body = document.createElement("div");
+  body.className = "opbody";
+
+  const num = (label, val, min, max, title) => {
+    const lab = document.createElement("label");
+    lab.textContent = label;
+    body.appendChild(lab);
+    const el = document.createElement("input");
+    el.type = "number"; el.value = val; el.min = min; el.max = max;
+    if (title) el.title = title;
+    body.appendChild(el);
+    return el;
+  };
+  const colors = num("colours", 16, 1, 256,
+    "palette size the snapper quantises to");
+  const pixel = num("pixel size override (0 = auto)", 10, 0, 512,
+    "the grid cell in source pixels; 0 lets the snapper detect it");
+
+  const pal = paletteControl(body, {onChange: () => snapPreviewSoon()});
+  const palette = pal.input;
+
+  const view = document.createElement("div");
+  view.className = "snapview";
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = 1;
+  view.appendChild(canvas);
+  body.appendChild(view);
+
+  const bar = document.createElement("div");
+  bar.className = "snapbar";
+  const zOut = document.createElement("button");
+  zOut.className = "sm"; zOut.textContent = "\u2212100%";
+  zOut.title = "zoom out one step";
+  const zLab = document.createElement("span");
+  zLab.textContent = "100%";
+  const zIn = document.createElement("button");
+  zIn.className = "sm"; zIn.textContent = "+100%";
+  zIn.title = "zoom in one step";
+  const zFit = document.createElement("button");
+  zFit.className = "sm"; zFit.textContent = "Fit";
+  zFit.title = "fit the snapped frame to the panel";
+  bar.append(zOut, zLab, zIn, zFit);
+  body.appendChild(bar);
+  // The frame's own dimensions sit under the controls, not squeezed into the
+  // same row, so "61x64 from 582x616 - frame 0" is readable in a narrow panel.
+  const info = document.createElement("div");
+  info.className = "snapinfo";
+  info.textContent = "\u2014";
+  body.appendChild(info);
+
+  const hint = document.createElement("div");
+  hint.className = "hint";
+  hint.textContent = o.help || "";
+  body.appendChild(hint);
+
+  const btn = document.createElement("button");
+  btn.textContent = "Snap Pixels";
+  btn.className = "sm primary";
+  btn.style.marginTop = "7px";
+  body.appendChild(btn);
+  det.appendChild(body);
+
+  const st = {colors, pixel, palette, canvas, view, zLab, info,
+              zoom: 1, fit: true, seq: 0, timer: null};
+  SNAP = st;
+  const onEdit = () => snapPreviewSoon();
+  colors.oninput = pixel.oninput = onEdit;
+  zIn.onclick = () => snapStep(1);
+  zOut.onclick = () => snapStep(-1);
+  zFit.onclick = () => snapFitNow();
+  // Opening the panel changes the preview's available width, so a fit set while
+  // it was collapsed would leave scrollbars. Re-fit when it is opened.
+  det.addEventListener("toggle", () => {
+    if (det.open && SNAP){ SNAP.fit = true; snapPreviewSoon(); }
+  });
+  btn.onclick = () => runOp(o,
+    {colors: st.colors, pixel_size: st.pixel, palette: st.palette}, btn);
+  return det;
+}
+function snapArgs(st){
+  return {colors: Number(st.colors.value) || 16,
+          pixel_size: Number(st.pixel.value) || 0,
+          palette: st.palette.value.trim()};
+}
+function snapPreviewSoon(){
+  if (!SNAP) return;
+  if (SNAP.timer) clearTimeout(SNAP.timer);
+  SNAP.timer = setTimeout(snapPreview, 220);
+}
+async function snapPreview(){
+  const st = SNAP;
+  if (!st || !S.doc || S.sel.size === 0){ return; }
+  const seq = ++st.seq;
+  st.info.textContent = "working\u2026";
+  try {
+    const d = await api("/api/editor/" + S.doc.id + "/snap_preview",
+                        {sel: selArr(), args: snapArgs(st)});
+    if (seq !== st.seq) return;
+    await new Promise((res, rej) => {
+      const im = new Image();
+      im.onload = () => {
+        const c = st.canvas, cx = c.getContext("2d");
+        c.width = d.w; c.height = d.h;
+        cx.imageSmoothingEnabled = false;
+        cx.clearRect(0, 0, d.w, d.h);
+        cx.drawImage(im, 0, 0);
+        res();
+      };
+      im.onerror = () => rej(new Error("preview failed to decode"));
+      im.src = d.png;
+    });
+    if (seq !== st.seq) return;
+    // A fitted preview follows the panel width; a stepped one keeps its zoom.
+    if (st.fit) st.zoom = snapFitZoom();
+    snapApplyZoom();
+    st.info.textContent = d.w + "\u00d7" + d.h + " grid \u00b7 kept at " +
+      d.src_w + "\u00d7" + d.src_h + " \u00b7 frame " + d.cell;
+  } catch(ex){
+    if (seq === st.seq) st.info.textContent = ex.message;
+  }
+}
+// One step is a whole 100%: the label reads 100%, 200%, ... so the buttons
+// change it by 1.0, not by a multiplier.
+function snapStep(dir){
+  const st = SNAP;
+  if (!st) return;
+  st.fit = false;
+  st.zoom = Math.max(0.1, Math.min(64, (st.zoom || 1) + dir));
+  snapApplyZoom();
+}
+function snapFitNow(){
+  const st = SNAP;
+  if (!st) return;
+  st.fit = true;
+  st.zoom = snapFitZoom();
+  snapApplyZoom();
+}
+function snapFitZoom(){
+  const st = SNAP;
+  if (!st || !st.canvas.width || !st.canvas.height) return 1;
+  // Measure with the scrollbar suppressed. A zoomed-in canvas brings a
+  // scrollbar, which steals width from clientWidth -- so fitting to it produced
+  // a smaller zoom than the previous fit, and every Fit click shrank the frame.
+  // The fit is to the panel's width, which only the scrollbar was hiding.
+  const el = st.view;
+  const prev = el.style.overflow;
+  el.style.overflow = "hidden";
+  const vw = el.clientWidth - 10;
+  el.style.overflow = prev;
+  if (vw <= 0) return 1;                     // not laid out yet
+  let vh = 290;
+  const mh = parseFloat(getComputedStyle(el).maxHeight);
+  if (isFinite(mh) && mh > 0) vh = mh - 10;
+  return Math.max(0.1, Math.min(64,
+    Math.min(vw / st.canvas.width, vh / st.canvas.height)));
+}
+function snapApplyZoom(){
+  const st = SNAP;
+  if (!st) return;
+  st.zLab.textContent = Math.round(st.zoom * 100) + "%";
+  st.canvas.style.width = (st.canvas.width * st.zoom) + "px";
+  st.canvas.style.height = (st.canvas.height * st.zoom) + "px";
+}
+// The Snap Pixels option only exists while a frame is selected: it acts on the
+// selection, and a document-wide pixel snap is not something to stumble into.
+// It opens fitted, so the first thing shown is the whole snapped frame.
+function updateSnapGate(){
+  const on = !!(S.doc && S.sel.size > 0 && SNAP);
+  if (SNAP_GROUP) SNAP_GROUP.style.display = on ? "" : "none";
+  if (on){ SNAP.fit = true; snapPreviewSoon(); }
+}
+
+async function runOp(o, inputs, btn){
+  if (!S.doc){ toast("open a sheet first"); return; }
+  const args = {};
+  for (const a of o.args){
+    const el = inputs[a.k];
+    if (!el) continue;
+    if (a.t === "bool") args[a.k] = el.checked;
+    else if (a.t === "int") args[a.k] = parseInt(el.value, 10) || 0;
+    else if (a.t === "float") args[a.k] = parseFloat(el.value);
+    else args[a.k] = el.value;
+  }
+  if (o.name === "align" && S.sel.size === 0){
+    toast("align has no selection \u2014 it will use every cell");
+  }
+  btn.disabled = true; busy(true);
+  try {
+    const res = await api("/api/editor/" + S.doc.id + "/op",
+                          {name: o.name, sel: selArr(), args});
+    if (!res.ok){ toast(res.error); $("status").textContent = res.error; return; }
+    applyDoc(res.doc);
+    if (res.changed.length) await refreshCells(res.changed);
+    $("status").textContent = res.msg;
+    toast(res.msg);
+    if (o.name === "snap_pixels"){
+      // The snap keeps the cell size -- the grid is scaled back up to it -- so
+      // there is no shrunken cell to zoom back from; leave the view alone and
+      // just refresh the preview.
+      snapPreviewSoon();
+    } else if (o.name === "set_columns" || o.name === "regrid_auto"
+        || o.name === "set_cell" || o.name === "resample"
+        || o.name === "pad_cell" || o.name === "crop_tight"
+        || o.name === "rotate" || o.name === "resize_pixels") fitView();
+        // resize_pixels belongs in this list for the same reason resample does:
+        // it changes cell_w/cell_h, so the sheet is a different number of pixels
+        // across and the old transform is no longer a fit. Left out, a x2 leaves
+        // the sheet at the previous zoom and half of it off screen.
+  } catch (ex){
+    toast(ex.message);
+    $("status").textContent = ex.message;
+  } finally {
+    btn.disabled = false; busy(false);
+    draw(); renderTimeline(); renderLayout();
+  }
+}
+
+// ------------------------------------------------------------- doc state
+function applyDoc(d){
+  const prev = S.doc;
+  // A change of frame count or cell size invalidates every cached image: the
+  // index->pixel mapping moved, or the cell is simply a different rectangle.
+  // A pure column change does not -- cell i is still cell i.
+  const geom = !prev
+    || prev.id !== d.id
+    || prev.n !== d.n
+    || prev.layout.cell_w !== d.layout.cell_w
+    || prev.layout.cell_h !== d.layout.cell_h;
+  S.doc = d;
+  if (geom){ S.img.clear(); S.imgRev.clear(); S.pending.clear(); }
+  if (!prev || prev.id !== d.id){
+    // A different sheet: the anchor is an index into the document that was open
+    // before, so a shift-click would range from a cell that is not even here --
+    // or past the end of a shorter sheet. Only on a change of document, so the
+    // anchor still survives an op.
+    S.anchorCell = 0;
+    AUDIO.cache.clear();      // clip ids/urls belong to the previous document
+    renderAudio();
+    // Same reason as the anchor: a content box is an index into the document
+    // that was open before, and the cache is keyed by that document's own
+    // cell_rev -- which says nothing about whether a *different* sheet's cell 7
+    // has the same subject. A live transform is the same claim one step further
+    // on, and it would preview onto a cell that may not even exist here.
+    S.boxCache.clear();
+    S.xformLive = null;
+    // A different sheet hands the player's fps back to the document. This branch
+    // runs only on a genuine change of document -- not on an op -- which is why
+    // the reset lives here: applying metadata must not steal the player back
+    // from the user mid-session.
+    S.playFpsOwn = false;
+  }
+  $("undo").disabled = d.undo === 0;
+  $("redo").disabled = d.redo === 0;
+  $("docname").textContent = (d.meta.name || "sheet") + "  \u00b7  " +
+    d.n + " frames  \u00b7  " + d.layout.columns + "\u00d7" + d.layout.rows +
+    "  \u00b7  rev " + d.rev;
+  $("dims").textContent = d.layout.columns * d.layout.cell_w + "\u00d7" +
+    d.layout.rows * d.layout.cell_h + " sheet  \u00b7  " +
+    d.layout.cell_w + "\u00d7" + d.layout.cell_h + " cells";
+  $("dlSheet").href = "/api/editor/" + d.id + "/sheet.png";
+  // The scrub's range is syncScrub's to set (it depends on the selection and on
+  // "play selection only"); renderPreview below does it for this document.
+  if (S.cur >= d.n) S.cur = d.n - 1;
+  for (const i of [...S.sel]) if (i >= d.n) S.sel.delete(i);
+  syncSel(); renderLayout(); renderPreview();
+}
+function syncSel(){
+  $("selinfo").textContent = S.doc ? selLabel() : "no sheet open";
+  syncOnlySel();
+  syncLoopSel();
+  renderAudioTarget();
+  renderTimeline();
+  // The selection decides the onion neighbours and can switch onion skin off,
+  // so the preview has to follow a selection change -- a marquee used to leave
+  // it showing the previous selection's ghosts.
+  renderPreview();
+  updateSnapGate();
+  draw();
+}
+// The "only the selected frames" box is meaningless with nothing selected, and
+// the UI should not let you tick it and then get a refusal from the server for a
+// reason it could have told you about itself. It is disabled and unticked
+// whenever there is no selection, and the label always states how many frames it
+// would write, so "export the selection" can never quietly mean "export
+// everything".
+function syncOnlySel(){
+  const box = $("onlySel"), n = S.doc ? S.doc.n : 0, k = S.sel.size;
+  box.disabled = !(S.doc && k > 0);
+  if (box.disabled) box.checked = false;
+  const on = box.checked && k > 0;
+  // The count goes in the label only when the option is ON. Shown while it is
+  // off, "only the selected 55 of 100 frames" reads as a description of what
+  // Save is about to do rather than as an option that is switched off -- and it
+  // was read exactly that way: the box was left unticked, Save wrote all 100
+  // frames, and "edit the saved sheet" then reopened 100 of them.
+  $("onlySelLabel").textContent = on
+    ? "only the selected " + k + " of " + n + " frames"
+    : (k ? "export only the selected frames (" + k + " selected)"
+         : "export only the selected frames (nothing selected)");
+  // NOTE: a selection wider than two frames makes onion skin stop DRAWING (see
+  // renderPreview), but the checkbox is deliberately left checked and enabled.
+  // Unchecking it here meant that going 3 frames -> 2 frames left onion off,
+  // so the user had to tick it again for the two-frame case they had already
+  // asked for. The preference is theirs to keep; only the drawing is gated.
+  syncSaveHint();
+}
+// What the Save button is actually going to write, stated in words, in both
+// states. This is the sentence that would have prevented the confusion: the
+// count in the checkbox label is a promise about the option, not about the save.
+function syncSaveHint(){
+  const h = $("saveHint");
+  if (!S.doc){ h.textContent = ""; return; }
+  const n = S.doc.n, k = S.sel.size;
+  const on = $("onlySel").checked && k > 0;
+  h.textContent = on
+    ? "this save writes the " + k + " selected frame" + (k === 1 ? "" : "s") +
+      ", not the other " + (n - k) + "."
+    : "this save writes all " + n + " frames.";
+}
+$("onlySel").onchange = syncOnlySel;
+
+// The play-selection box names how many frames the selection holds, so the
+// count is visible where the playback mode is chosen and not only in the
+// selection readout. Off, and with nothing selected, it stays plain.
+function syncLoopSel(){
+  const k = S.doc ? S.sel.size : 0;
+  $("loopSelLabel").textContent = k
+    ? "play selection only (" + k + ")"
+    : "play selection only";
+}
+
+// ------------------------------------------------------------------- audio
+// A clip belongs to a frame. The panel's "target" is the selection when there
+// is one, else the current frame -- the same rule the ops follow. Playback
+// fires a frame's clips as the preview crosses it.
+const AUDIO = {cache: new Map()};
+function audioItems(){ return (S.doc && S.doc.audio) || []; }
+function audioFor(frame){ return audioItems().filter(a => a.frame === frame); }
+function playClip(a){
+  try {
+    let el = AUDIO.cache.get(a.id);
+    if (!el){
+      el = new Audio(a.url);
+      el.volume = Math.max(0, Math.min(1, a.volume == null ? 1 : a.volume));
+      AUDIO.cache.set(a.id, el);
+    }
+    el.currentTime = 0;
+    el.play().catch(() => {});
+  } catch(e){}
+}
+function playFrameAudio(frame){
+  if (!$("audioPlay").checked) return;
+  for (const a of audioFor(frame)) playClip(a);
+}
+function audioTargets(){ return S.sel.size ? selArr() : [S.cur]; }
+let _audioTargetTxt = null;
+function renderAudioTarget(){
+  const k = S.sel.size;
+  const t = !S.doc ? ""
+    : (k ? "target: " + k + " selected frame" + (k === 1 ? "" : "s")
+         : "target: frame " + S.cur);
+  // markTimelineCurrent() calls this on every frame of playback, and the string
+  // is the same until the cursor moves. Writing DOM text 60 times a second for
+  // an unchanged value is a layout invalidation per frame for no reason.
+  if (t === _audioTargetTxt) return;
+  _audioTargetTxt = t;
+  $("audioTarget").textContent = t;
+}
+function renderAudio(){
+  renderAudioTarget();
+  // Repaint the timeline first: its note badges track the clip list, and it has
+  // to run on the empty path too so removing the last clip clears them.
+  renderTimeline();
+  renderFrameLabel();
+  const list = $("audioList");
+  list.innerHTML = "";
+  // Say why it is empty. This used to return here leaving the box completely
+  // blank -- not even the "no sounds attached" line below -- so a page holding no
+  // document showed an empty panel that is indistinguishable from a broken list.
+  // Reported as "audio file list disapeard"; the list was fine, the page had lost
+  // its document (a server restart drops every open document id), and the panel
+  // said nothing about it. Every other empty state in the app names itself.
+  if (!S.doc){
+    const e = document.createElement("div");
+    e.className = "hint"; e.textContent = "open a sheet first";
+    list.appendChild(e);
+    return;
+  }
+  const items = audioItems();
+  if (!items.length){
+    const e = document.createElement("div");
+    e.className = "hint"; e.textContent = "no sounds attached";
+    list.appendChild(e);
+    return;
+  }
+  for (const a of items){
+    const row = document.createElement("div");
+    // The row for the frame being looked at (or one that is selected) is called
+    // out, so "which sound is on this frame" is answerable at a glance.
+    row.className = "audiorow" +
+      ((a.frame === S.cur || S.sel.has(a.frame)) ? " here" : "");
+    const fr = document.createElement("span");
+    fr.className = "fr"; fr.textContent = "frame " + a.frame;
+    const nm = document.createElement("span");
+    nm.className = "nm"; nm.textContent = a.name; nm.title = a.name;
+    const pl = document.createElement("button");
+    pl.className = "sm"; pl.textContent = "\u25b6"; pl.title = "preview this clip";
+    pl.onclick = () => playClip(a);
+    const rm = document.createElement("button");
+    rm.className = "sm"; rm.textContent = "\u2715"; rm.title = "remove";
+    rm.onclick = async () => {
+      try {
+        const r = await fetch("/api/editor/" + S.doc.id + "/audio/" + a.id,
+                              {method: "DELETE"});
+        const d = await r.json();
+        if (!d.ok){ toast(d.error || "remove failed"); return; }
+        S.doc.audio = d.audio;
+        AUDIO.cache.delete(a.id);
+        renderAudio();
+      } catch(ex){ toast(ex.message); }
+    };
+    row.append(fr, nm, pl, rm);
+    // The volume is what the engine plays at, not a preview-only setting: save_doc
+    // writes it into the sidecar beside the clip, so it gets a control of its own
+    // instead of being fixed at 1.
+    const vrow = document.createElement("div");
+    vrow.className = "volrow";
+    const vl = document.createElement("span");
+    vl.textContent = "vol";
+    const vs = document.createElement("input");
+    vs.type = "range"; vs.min = "0"; vs.max = "100"; vs.step = "5";
+    vs.value = String(Math.round((a.volume == null ? 1 : a.volume) * 100));
+    vs.title = "how loud this clip plays";
+    const vv = document.createElement("span");
+    vv.className = "volval"; vv.textContent = vs.value + "%";
+    // Audible while the slider is dragged, written once when it is let go: the
+    // cached element is already in the page so the change is immediate, and one
+    // request per gesture is what the server should see rather than one per pixel.
+    vs.oninput = () => {
+      vv.textContent = vs.value + "%";
+      const el = AUDIO.cache.get(a.id);
+      if (el) el.volume = Number(vs.value) / 100;
+    };
+    vs.onchange = () => setClipVolume(a, Number(vs.value) / 100, vv, vs);
+    vrow.append(vl, vs, vv);
+    const wrap = document.createElement("div");
+    wrap.className = "audioclip";
+    wrap.append(row, vrow);
+    list.appendChild(wrap);
+  }
+}
+
+async function setClipVolume(a, vol, valEl, slider){
+  try {
+    const d = await api("/api/editor/" + S.doc.id + "/audio/" + a.id + "/volume",
+                        {volume: vol});
+    a.volume = d.volume;
+    const el = AUDIO.cache.get(a.id);
+    if (el) el.volume = d.volume;
+    valEl.textContent = Math.round(d.volume * 100) + "%";
+    slider.value = String(Math.round(d.volume * 100));
+  } catch(ex){
+    // Repaint from S.doc.audio, whose volume the server refused to change, so
+    // the panel cannot keep showing a number that was not accepted.
+    toast(ex.message);
+    renderAudio();
+  }
+}
+// ------------------------------------------------------------- audio library
+// Point the editor at a folder of clips and drag one onto a frame. The server
+// lists the folder breadth-first and bounded, so a library of hundreds of clips
+// is one request instead of one file dialog per clip.
+//
+// The drag carries the clip's path in the DataTransfer under a private type, and
+// the drop targets accept *that* type. This is the part that matters: the version
+// that was removed kept a module-level "a library drag is in progress" flag that
+// every drop target had to consult, so when the panel went the flag lost its
+// writer, the targets became dead code, and the whole gesture went with them. A
+// drop target that decides from the drag's own payload cannot be orphaned by the
+// panel that feeds it.
+const LIB = {items: [], dir: ""};
+const LIB_MIME = "application/x-sprite-clip";
+// Remembered so the listing is there on the next visit. The whole point of the
+// folder is not having to find the clip again, and re-typing the path is that
+// same problem one step earlier.
+const LIB_DIR_KEY = "sprite.audioLibDir";
+function rememberLibDir(dir){
+  try { localStorage.setItem(LIB_DIR_KEY, dir); } catch(e){ /* private mode */ }
+}
+
+function libRow(it){
+  const row = document.createElement("div");
+  row.className = "audiorow";
+  row.draggable = true;
+  // No size badge and no size in the tooltip: "remove file sizes at audio
+  // library". The path stays, because two clips can share a name in different
+  // subfolders and the listing shows the relative one.
+  row.title = it.path;
+  const nm = document.createElement("span");
+  nm.className = "nm"; nm.textContent = it.rel;
+  // Audition it before the drag: "which of these three hit sounds is the one I
+  // want" is not a question a filename answers, and this is the only place a
+  // clip can be heard before it is attached to a frame.
+  const pl = document.createElement("button");
+  pl.className = "sm"; pl.textContent = "\u25b6"; pl.title = "play this clip";
+  pl.onclick = () => playLibClip(it, row);
+  const st = document.createElement("button");
+  st.className = "sm"; st.textContent = "\u25a0"; st.title = "stop";
+  st.onclick = () => stopLibClip();
+  row.append(nm, pl, st);
+  row.addEventListener("dragstart", e => {
+    e.dataTransfer.setData(LIB_MIME, it.path);
+    e.dataTransfer.setData("text/plain", it.path);
+    e.dataTransfer.effectAllowed = "copy";
+    row.classList.add("dragging");
+  });
+  row.addEventListener("dragend", () => row.classList.remove("dragging"));
+  return row;
+}
+
+// One audition at a time. Starting a second clip stops the first, so the mark on
+// a row always means "this one is sounding right now" rather than "this one was
+// started at some point".
+const LIBPLAY = {el: null, row: null};
+function stopLibClip(){
+  if (LIBPLAY.el){
+    try { LIBPLAY.el.pause(); } catch(e){ /* already gone */ }
+    LIBPLAY.el = null;
+  }
+  if (LIBPLAY.row) LIBPLAY.row.classList.remove("playing");
+  LIBPLAY.row = null;
+}
+function playLibClip(it, row){
+  stopLibClip();
+  // The listing hands the page a path and nothing else, so this is the one place
+  // a library clip's bytes come through the browser -- served by the library's
+  // own file route, which applies the same rules the attach route does. A fresh
+  // element each time, which is what makes clicking play twice restart the clip.
+  const el = new Audio("/api/editor/audio_lib/file?path="
+                       + encodeURIComponent(it.path));
+  LIBPLAY.el = el; LIBPLAY.row = row;
+  row.classList.add("playing");
+  // Cleared wherever playback ends, including the paths where it never started:
+  // a mark that survives a refusal would say something is sounding that is not.
+  const clear = () => { if (LIBPLAY.el === el) stopLibClip(); };
+  el.onended = clear;
+  el.onerror = () => { clear(); toast("cannot play " + it.rel); };
+  el.play().catch(() => { clear(); toast("cannot play " + it.rel); });
+}
+
+function renderLib(truncated){
+  const host = $("libRows");
+  host.innerHTML = "";
+  if (!LIB.items.length){
+    const e = document.createElement("div");
+    e.className = "hint"; e.textContent = "no audio files in that folder";
+    host.appendChild(e);
+  }
+  for (const it of LIB.items) host.appendChild(libRow(it));
+  $("libNote").textContent = LIB.items.length + " clip"
+    + (LIB.items.length === 1 ? "" : "s")
+    + (truncated ? " (listing stopped at the cap)" : "")
+    + " \u2014 drag one onto a frame or a cell";
+}
+
+// Only the newest listing is allowed to render. boot() starts restoreLibDir()
+// without awaiting it, so the remembered folder's listing can still be in flight
+// when the user types a folder and clicks Go -- and if that first response lands
+// second it replaces the listing they asked for with the one they did not. This
+// is not theoretical: the driver's 16j read its row paths off one folder while
+// the panel showed another, because a listing from the previous run was still in
+// flight. A token is the whole fix, and the token also decides who clears the
+// busy flag, so a superseded request cannot report the newer one as finished.
+let LIB_REQ = 0;
+
+async function loadLib(opts){
+  const quiet = !!(opts && opts.quiet);
+  const dir = $("libDir").value.trim();
+  if (!dir){ if (!quiet) toast("give a folder to list"); return false; }
+  const mine = ++LIB_REQ;
+  busy(true);
+  try {
+    const d = await api("/api/editor/audio_lib?dir=" + encodeURIComponent(dir));
+    // Superseded: a newer listing was asked for while this one was in flight, so
+    // this answer is about a folder the panel is no longer showing. `null`, not
+    // `false` -- restoreLibDir forgets a folder that *failed*, and a superseded
+    // request has not failed.
+    if (mine !== LIB_REQ) return null;
+    // A route that is not there answers a 404 carrying no `audio` list at all,
+    // and a listing panel that renders `d.audio || []` reports that as "no audio
+    // files in that folder" -- a lie about the user's folder, which is how a
+    // stale server once made a full folder look empty. Any panel that renders a
+    // list has to check that what it got is a list.
+    if (!Array.isArray(d.audio))
+      throw new Error("the server did not list that folder \u2014 restart it?");
+    LIB.items = d.audio; LIB.dir = d.dir || dir;
+    renderLib(!!d.truncated);
+    // Only a folder that listed is remembered: storing the path before the
+    // request would remember typos.
+    rememberLibDir(LIB.dir);
+    return true;
+  } catch(ex){
+    // A failure that has been superseded must not clear the panel either: the
+    // note would blame the folder that is no longer in the box.
+    if (mine !== LIB_REQ) return null;
+    LIB.items = [];
+    $("libRows").innerHTML = "";
+    $("libNote").textContent = ex.message;
+    if (!quiet) toast(ex.message);
+    return false;
+  } finally { if (mine === LIB_REQ) busy(false); }
+}
+// Restore-and-relist, the way the last-open sheet works. quiet, because this
+// runs at boot where a toast about a folder the user did not ask for is noise;
+// the note keeps the reason on screen either way.
+async function restoreLibDir(){
+  let dir = "";
+  try { dir = localStorage.getItem(LIB_DIR_KEY) || ""; } catch(e){}
+  if (!dir) return;
+  $("libDir").value = dir;
+  // false is "that folder failed"; true and null both mean "leave the key alone"
+  // -- null being the case where the user asked for another folder before this
+  // one answered, which is not a reason to forget theirs.
+  if (await loadLib({quiet: true}) !== false) return;
+  // A remembered folder that will not open is forgotten rather than retried on
+  // every visit -- the rule the last-open sheet already follows. The path stays
+  // in the box so the failure is visible while the user is looking at it.
+  try { localStorage.removeItem(LIB_DIR_KEY); } catch(e){}
+}
+$("libGo").onclick = () => loadLib();
+$("libDir").addEventListener("keydown", e => {
+  if (e.key === "Enter"){ e.preventDefault(); loadLib(); }
+});
+
+async function attachFromLibrary(path, frame){
+  if (!S.doc){ toast("open a sheet first"); return; }
+  if (!(frame >= 0)){ toast("drop it on a frame, not beside them"); return; }
+  try {
+    const d = await api("/api/editor/" + S.doc.id + "/audio/from_path",
+                        {path: path, frame: frame});
+    S.doc.audio = d.audio;
+    renderAudio();
+    const nm = String(path).split(/[\\/]/).pop();
+    toast("attached " + nm + " to frame " + d.frame);
+  } catch(ex){ toast(ex.message); }
+}
+
+function dragHasClip(e){
+  return !!e.dataTransfer
+    && [...(e.dataTransfer.types || [])].includes(LIB_MIME);
+}
+function dragPath(e){
+  return e.dataTransfer.getData(LIB_MIME)
+      || e.dataTransfer.getData("text/plain");
+}
+function clearDropMarks(){
+  for (const el of document.querySelectorAll(".dropover"))
+    el.classList.remove("dropover");
+}
+
+// The timeline: the frame thumbnail under the pointer is the drop target, which
+// is also where the note badge shows up -- so the drop and its evidence are in
+// the same place.
+const stripEl = $("strip");
+stripEl.addEventListener("dragover", e => {
+  if (!dragHasClip(e)) return;
+  e.preventDefault();                    // without this the drop never fires
+  e.dataTransfer.dropEffect = "copy";
+  clearDropMarks();
+  const cv = e.target.closest && e.target.closest("#strip canvas");
+  if (cv) cv.classList.add("dropover");
+});
+stripEl.addEventListener("dragleave", clearDropMarks);
+stripEl.addEventListener("drop", e => {
+  if (!dragHasClip(e)) return;
+  e.preventDefault();
+  clearDropMarks();
+  const cv = e.target.closest && e.target.closest("#strip canvas");
+  if (cv) attachFromLibrary(dragPath(e), Number(cv.dataset.i));
+});
+
+// The sheet: the cell under the pointer, mapped through the same helpers the
+// pointer tools use, so a drop lands on the frame a click there would select.
+view.addEventListener("dragover", e => {
+  if (!dragHasClip(e)) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = "copy";
+  clearDropMarks();
+  view.classList.add("dropover");
+});
+view.addEventListener("dragleave", clearDropMarks);
+view.addEventListener("drop", e => {
+  if (!dragHasClip(e)) return;
+  e.preventDefault();
+  clearDropMarks();
+  const [sx, sy] = screenToSheet(e.offsetX, e.offsetY);
+  attachFromLibrary(dragPath(e), cellAt(sx, sy));
+});
+
+$("audioAdd").onclick = () => {
+  if (!S.doc){ toast("open a sheet first"); return; }
+  $("audioFile").click();
+};
+$("audioFile").onchange = async () => {
+  const files = [...$("audioFile").files];
+  $("audioFile").value = "";
+  if (!S.doc || !files.length) return;
+  const targets = audioTargets();
+  const pairs = [];
+  if (files.length === 1){
+    // One sound for a selection means "every selected frame makes this sound".
+    for (const f of targets) pairs.push([files[0], f]);
+  } else {
+    files.forEach((f, k) =>
+      pairs.push([f, targets[Math.min(k, targets.length - 1)]]));
+  }
+  let last = null, added = 0;
+  for (const [file, frame] of pairs){
+    const url = "/api/editor/" + S.doc.id + "/audio?frame=" + frame +
+                "&name=" + encodeURIComponent(file.name);
+    try {
+      const r = await fetch(url, {method: "POST", body: file});
+      const d = await r.json();
+      if (!d.ok){ toast(d.error || "audio upload failed"); break; }
+      last = d.audio; added++;
+    } catch(ex){ toast("audio upload failed: " + ex.message); break; }
+  }
+  if (last){
+    S.doc.audio = last;
+    renderAudio();
+    toast("added " + added + " sound" + (added === 1 ? "" : "s"));
+  }
+};
+
+// ---------------------------------------------------------------- preview
+const prev = $("prev");
+const pctx = prev.getContext("2d");
+// One implementation of "how the current frame is drawn", so the panel
+// preview and the pop-out cannot disagree: current frame first, then the
+// onion neighbours ON TOP (underneath would hide them on an opaque cell).
+function drawFrameInto(ctx, w, h){
+  ctx.setTransform(1,0,0,1,0,0);
+  ctx.clearRect(0, 0, w, h);
+  ctx.imageSmoothingEnabled = false;
+  const im = S.img.get(S.cur);
+  if (im) ctx.drawImage(im, 0, 0, w, h);
+  if ($("onion").checked && S.sel.size <= 2){
+    const [pv, nx] = onionNeighbours();
+    if (pv !== undefined && S.img.get(pv)){
+      ctx.globalAlpha = 0.35;
+      ctx.drawImage(S.img.get(pv), 0, 0, w, h);
+    }
+    if (nx !== undefined && S.img.get(nx)){
+      ctx.globalAlpha = 0.35;
+      ctx.drawImage(S.img.get(nx), 0, 0, w, h);
+    }
+    ctx.globalAlpha = 1;
+  }
+}
+function renderPreview(){
+  // The preview is stretched to the panel width by CSS, so its backing
+  // resolution is a fixed 2x the cell -- there is nothing for a user-facing
+  // "scale" to do. That dropdown is playback speed now.
+  const sc = 2;
+  if (!S.doc){ pctx.clearRect(0,0,prev.width,prev.height); return; }
+  const {cw, ch} = SHEET();
+  // Only when it actually changes. Assigning canvas.width/height always resets
+  // and reallocates the backing store, and this runs once per animation frame
+  // while playing -- so the same size was being thrown away and rebuilt 60
+  // times a second, which is real memory churn in the GPU process rather than
+  // a tidiness question.
+  const pw = Math.max(1, Math.round(cw * sc));
+  const ph = Math.max(1, Math.round(ch * sc));
+  if (prev.width !== pw || prev.height !== ph){ prev.width = pw; prev.height = ph; }
+  drawFrameInto(pctx, prev.width, prev.height);
+  renderFrameLabel();
+  // The range as well as the value: with "play selection only" the scrub spans
+  // the played frames and its value is an index into them. See syncScrub.
+  syncScrub();
+  // The pop-out follows the same frame for free: every tick, scrub and edit
+  // lands here, so one call keeps it in sync without its own loop.
+  if (BIG.open) renderBig();
+}
+// The frame readout names any sound on the frame, so the frame->audio link is
+// visible wherever the frame number is.
+function renderFrameLabel(){
+  if (!S.doc){ $("frameLabel").textContent = "\u2014"; return; }
+  const au = audioFor(S.cur);
+  $("frameLabel").textContent = "frame " + S.cur + " / " + (S.doc.n - 1) +
+    (au.length ? "  \u00b7  \u266a " + au.map(a => a.name).join(", ") : "");
+}
+// The frames onion skin draws as ghosts: the neighbours of the current frame
+// in the order the user is comparing frames in.
+//
+// Selection first. Selecting frames is how you say "these are the ones I am
+// looking at together", so with a selection onion skins the previous/next
+// SELECTED frame -- select 0 and 23, and 23's ghost is 0. It used to use the
+// document order unless "play selection only" was ticked, so the same selection
+// drew the ordinary neighbours 22 and 24, which are near-identical to 23 and
+// invisible: reported as "i select frame 0 and frame 23 and click onion skin
+// but i can not see the difference on top of them". Only with no selection does
+// it fall back to the document order.
+//
+// The fallback also covers the cursor being outside the comparison set (a
+// ctrl-click selection leaves the cursor where it was): there are no
+// neighbours in the set, so use the document's own prev/next rather than
+// silently drawing no ghost.
+function onionNeighbours(){
+  const n = S.doc ? S.doc.n : 0;
+  const order = S.sel.size ? selArr() : Array.from({length: n}, (_, i) => i);
+  const at = order.indexOf(S.cur);
+  if (at >= 0) return [order[at - 1], order[at + 1]];
+  const pv = S.cur - 1, nx = S.cur + 1;
+  return [pv >= 0 ? pv : undefined, nx < n ? nx : undefined];
+}
+function playbackOrder(){
+  const n = S.doc ? S.doc.n : 0;
+  const idx = $("loopSel").checked && S.sel.size
+    ? selArr()
+    : Array.from({length: n}, (_, i) => i);
+  const trim = Number($("trimTo").value) || 0;
+  if (!trim) return idx;
+  return idx.slice(0, Math.max(1, Math.min(idx.length, trim)));
+}
+// "play selection only" is not just a playback mode: if the preview plays those
+// frames, the seek has no business landing anywhere else. Unticked, the scrub is
+// a *frame index* over the whole document; ticked, it is a *position in the
+// playback order*. For a selection of {0, 23} a slider spanning 0..23 spends 22
+// of its 24 stops on frames that are never played, and the arrow keys walk
+// straight through them -- which is exactly what was reported: play the
+// selection and the seek still scrubs the whole sheet. The label keeps naming
+// the absolute frame, so which index means what is never ambiguous.
+function playSelOn(){ return $("loopSel").checked && S.sel.size > 0; }
+function scrubState(){
+  const n = S.doc ? S.doc.n : 0;
+  if (!playSelOn()) return {order: null, max: Math.max(0, n - 1)};
+  const order = playbackOrder();
+  return {order: order, max: Math.max(0, order.length - 1)};
+}
+// Where the cursor sits in the order, for a cursor that is not in it at all: a
+// ctrl-click can deselect the frame you are standing on. Snapping to the nearest
+// selected frame is what pressing Play does on its first tick, so the two agree
+// instead of the slider pointing at one frame and the preview showing another.
+function orderPos(order, cur){
+  const at = order.indexOf(cur);
+  if (at >= 0) return at;
+  let lo = 0;
+  for (const i of order) if (i < cur) lo++;
+  return Math.min(lo, Math.max(0, order.length - 1));
+}
+function syncScrub(){
+  const el = $("scrub");
+  const st = scrubState();
+  if (Number(el.max) !== st.max) el.max = st.max;
+  const pos = st.order ? orderPos(st.order, S.cur)
+                       : Math.max(0, Math.min(st.max, S.cur));
+  if (st.order && st.order[pos] !== S.cur) S.cur = st.order[pos];
+  if (Number(el.value) !== pos) el.value = pos;
+}
+// ------------------------------------------------------- big preview
+// The Pop out button beside Play opens the same animation bigger: the same
+// frame (and the same onion ghosts) drawn by drawFrameInto, with its own zoom
+// that never moves the panel canvas. Fit tracks the window; the first manual
+// zoom step claims it, like the player's fps ownership.
+const BIG = {open: false, zoom: 1, fit: true};
+const bigBack = $("bigBack"), bigView = $("bigView"), bigCv = $("bigCv");
+const bigCtx = bigCv.getContext("2d");
+function bigFitZoom(){
+  if (!S.doc) return 1;
+  const {cw, ch} = SHEET();
+  const r = bigView.getBoundingClientRect();
+  const f = Math.min((r.width - 8) / cw, (r.height - 8) / ch);
+  // Whole-number scales keep pixels crisp, so fit means the largest whole
+  // zoom that still fits -- the closest fit to 100% in whole steps. Below 1x
+  // (frame bigger than the stage) there is no whole step that fits, so the
+  // fractional fit is used and the whole frame stays visible.
+  return f >= 1 ? Math.max(1, Math.floor(f)) : Math.max(0.05, f);
+}
+function renderBig(){
+  if (!BIG.open || !S.doc) return;
+  const {cw, ch} = SHEET();
+  if (BIG.fit) BIG.zoom = bigFitZoom();
+  const z = Math.max(0.05, Math.min(32, BIG.zoom));
+  const w = Math.max(1, Math.round(cw * z)), h = Math.max(1, Math.round(ch * z));
+  // Same rule as the panel canvas: resizing reallocates the backing store, so
+  // only do it when the size actually changed -- this runs per animation frame.
+  if (bigCv.width !== w || bigCv.height !== h){ bigCv.width = w; bigCv.height = h; }
+  bigCv.style.width = w + "px"; bigCv.style.height = h + "px";
+  drawFrameInto(bigCtx, w, h);
+  $("bigZoomLab").textContent = Math.round(z * 100) + "%";
+  $("bigFrameLab").textContent = "frame " + S.cur + " / " + (S.doc.n - 1) +
+    "  \u00b7  " + cw + "\u00d7" + ch;
+  // Transport mirrors the panel: the label follows whoever toggled playback
+  // (panel button, spacebar, this button), and the slider is the same
+  // position-in-order as the panel scrub -- syncScrub already ran above, so
+  // this only moves the modal's own slider, never the cursor.
+  $("bigPlay").textContent = S.playing ? "Pause" : "Play";
+  const bst = scrubState();
+  const bel = $("bigScrub");
+  if (Number(bel.max) !== bst.max) bel.max = bst.max;
+  const bpos = bst.order ? orderPos(bst.order, S.cur)
+                         : Math.max(0, Math.min(bst.max, S.cur));
+  if (Number(bel.value) !== bpos) bel.value = bpos;
+}
+function openBig(){
+  if (!S.doc){ toast("open a sheet first"); return; }
+  // Opens at the closest whole-number fit: as big as the stage allows while
+  // keeping pixels crisp. 100% is one click away for actual-pixels judging.
+  BIG.open = true; BIG.fit = true;
+  bigBack.hidden = false;
+  renderBig();
+}
+function closeBig(){
+  BIG.open = false;
+  bigBack.hidden = true;
+}
+$("popPrev").onclick = openBig;
+$("bigClose").onclick = closeBig;
+// Play reuses the panel button, so there is exactly one toggle and its label,
+// shortcut and reset logic cannot drift apart.
+$("bigPlay").onclick = () => { $("play").click(); renderBig(); };
+// First / last step the cursor without touching playback: like the scrub,
+// they move where you are looking, not whether it is moving.
+$("bigFirst").onclick = () => {
+  const order = playbackOrder();
+  if (S.doc && order.length) S.cur = order[0];
+  renderPreview(); markTimelineCurrent(); draw();
+};
+$("bigLast").onclick = () => {
+  const order = playbackOrder();
+  if (S.doc && order.length) S.cur = order[order.length - 1];
+  renderPreview(); markTimelineCurrent(); draw();
+};
+// The panel scrub's twin: a stop is a frame in the order when "play selection
+// only" is ticked, a plain frame index otherwise.
+$("bigScrub").oninput = () => {
+  const st = scrubState();
+  const v = Math.max(0, Math.min(st.max, Number($("bigScrub").value) || 0));
+  S.cur = st.order ? st.order[v] : v;
+  renderPreview(); markTimelineCurrent(); draw();
+};
+bigBack.addEventListener("mousedown", e => { if (e.target === bigBack) closeBig(); });
+$("bigIn").onclick = () => { BIG.fit = false; BIG.zoom = Math.min(32, BIG.zoom * 1.25); renderBig(); };
+$("bigOut").onclick = () => { BIG.fit = false; BIG.zoom = Math.max(0.05, BIG.zoom / 1.25); renderBig(); };
+$("bigFit").onclick = () => { BIG.fit = true; renderBig(); };
+$("big100").onclick = () => { BIG.fit = false; BIG.zoom = 1; renderBig(); };
+// A fitted pop-out follows the window, like the fitted Snap preview does.
+window.addEventListener("resize", () => {
+  if (BIG.open && BIG.fit) requestAnimationFrame(renderBig);
+});
+function tick(t){
+  if (S.playing && S.doc){
+    if (!S.lastT) S.lastT = t;
+    const dt = (t - S.lastT) / 1000;
+    S.lastT = t;
+    S.acc += dt;
+    // The player's OWN fps, times its own speed. Neither is the document's and
+    // neither is written anywhere: the Grid panel's fps is the document's and is
+    // what the sidecar carries. Read from the box on every tick rather than
+    // cached, so moving either control takes effect on the next frame without a
+    // re-render -- and so the two can never drift out of sync with what is on
+    // screen.
+    const speed = Number($("playSpeed").value) || 1;
+    const fps = Math.max(1, (Number($("playFps").value) || 24) * speed);
+    const order = playbackOrder();
+    let beforeCur = S.cur;
+    while (S.acc >= 1/fps){
+      S.acc -= 1/fps;
+      const mode = $("playMode").value;
+      const pos = order.indexOf(S.cur);
+      if (mode === "once"){
+        if (pos >= order.length - 1){ S.playing = false; $("play").textContent = "Play"; break; }
+        S.cur = order[pos + 1];
+      } else if (mode === "pingpong"){
+        if (S.dir > 0){
+          if (pos >= order.length - 1){ S.dir = -1; S.cur = order[Math.max(0, order.length-2)]; }
+          else S.cur = order[pos + 1];
+        } else {
+          if (pos <= 0){ S.dir = 1; S.cur = order[Math.min(order.length-1, 1)]; }
+          else S.cur = order[pos - 1];
+        }
+      } else {
+        S.cur = order[(pos + 1) % order.length];
+      }
+      renderPreview();
+      markTimelineCurrent();
+      draw();
+      if (S.cur !== beforeCur){ playFrameAudio(S.cur); beforeCur = S.cur; }
+    }
+  } else { S.lastT = 0; }
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+$("play").onclick = () => {
+  if (!S.doc) return;
+  S.playing = !S.playing;
+  S.lastT = 0; S.acc = 0; S.dir = 1;
+  $("play").textContent = S.playing ? "Pause" : "Play";
+};
+$("scrub").oninput = () => {
+  const st = scrubState();
+  const v = Math.max(0, Math.min(st.max, Number($("scrub").value) || 0));
+  // ticked: a stop is a frame in the order, so a stop between two selected
+  // frames cannot be reached at all -- that is the whole point of the range.
+  S.cur = st.order ? st.order[v] : v;
+  renderPreview(); markTimelineCurrent(); draw();
+};
+["onion","fps","playMode","trimTo"].forEach(id => {
+  $(id).addEventListener("change", renderPreview);
+  $(id).addEventListener("input", renderPreview);
+});
+// Taking the player's fps over. Marked on the first keystroke rather than
+// compared against the document's value, so deliberately typing the same number
+// the document has still counts as the user claiming it.
+["input", "change"].forEach(ev =>
+  $("playFps").addEventListener(ev, () => { S.playFpsOwn = true; }));
+// Ticking this one can move the cursor (a cursor outside the selection snaps
+// into it), so it redraws the sheet as well as the preview.
+$("loopSel").onchange = () => { renderPreview(); draw(); };
+
+// --------------------------------------------------------------- timeline
+function renderTimeline(){
+  const strip = $("strip");
+  if (!S.doc){ strip.innerHTML = ""; return; }
+  const {cw, ch} = SHEET();
+  const th = 46;
+  const tw = Math.max(12, Math.round(cw * th / ch));
+  strip.innerHTML = "";
+  for (let i = 0; i < S.doc.n; i++){
+    const cv = document.createElement("canvas");
+    cv.width = tw; cv.height = th;
+    cv.dataset.i = i;
+    cv.className = (S.sel.has(i) ? "sel " : "") + (i === S.cur ? "cur" : "");
+    const au = audioFor(i).map(a => a.name);
+    cv.title = "cell " + i + (au.length ? "  \u00b7  \u266a " + au.join(", ") : "");
+    cv.onclick = e => {
+      if (e.ctrlKey || e.metaKey){
+        if (S.sel.has(i)) S.sel.delete(i); else S.sel.add(i);
+      } else if (e.shiftKey){
+        // Same rule as the sheet, from the same helper -- the two used to be
+        // written out separately and drifted into different meanings.
+        selectRange(S.anchorCell, i);
+      } else { S.sel.clear(); S.sel.add(i); S.anchorCell = i; }
+      S.cur = i; syncSel(); renderPreview();
+    };
+    strip.appendChild(cv);
+    drawThumb(i);
+  }
+}
+// One implementation of "how a thumbnail is drawn", so a thumbnail repainted
+// after an edit and one built by renderTimeline cannot disagree.
+function drawThumb(i){
+  // strip.children[i], not querySelectorAll("#strip canvas")[i]: the strip holds
+  // one canvas per frame in frame order and renderTimeline() calls this once per
+  // frame, so the query version walked the whole timeline n times per render --
+  // O(n^2) DOM traversal on every op, every selection change and every paint.
+  const cv = $("strip").children[i];
+  if (!cv) return;
+  const c = cv.getContext("2d");
+  c.clearRect(0, 0, cv.width, cv.height);
+  const im = S.img.get(i);
+  if (im){ c.imageSmoothingEnabled = false; c.drawImage(im, 0, 0, cv.width, cv.height); }
+  // A note badge, so a frame that makes a sound is marked on the timeline itself
+  // and not only in the Audio list.
+  if (audioFor(i).length){
+    const r = 6, x = cv.width - r - 1, y = cv.height - r - 1;
+    c.beginPath();
+    c.arc(x, y, r, 0, Math.PI * 2);
+    c.fillStyle = "rgba(14,116,144,.92)";
+    c.fill();
+    c.fillStyle = "#fff";
+    c.font = "9px system-ui";
+    c.textAlign = "center"; c.textBaseline = "middle";
+    c.fillText("\u266a", x, y + 0.5);
+  }
+}
+function markTimelineCurrent(){
+  const strip = $("strip");
+  for (const cv of strip.children){
+    cv.classList.toggle("cur", Number(cv.dataset.i) === S.cur);
+  }
+  const cur = strip.children[S.cur];
+  if (cur && S.playing){
+    const l = cur.offsetLeft, r = l + cur.offsetWidth;
+    if (l < strip.scrollLeft || r > strip.scrollLeft + strip.clientWidth)
+      cur.scrollIntoView({block: "nearest", inline: "center"});
+  }
+  renderAudioTarget();
+}
+$("selAll").onclick = () => { S.sel = new Set(Array.from({length: S.doc.n}, (_,i)=>i)); syncSel(); };
+$("selNone").onclick = () => { S.sel.clear(); syncSel(); };
+$("selInvert").onclick = () => {
+  const s = new Set();
+  for (let i = 0; i < S.doc.n; i++) if (!S.sel.has(i)) s.add(i);
+  S.sel = s; syncSel();
+};
+$("selEven").onclick = () => { S.sel = new Set(Array.from({length:S.doc.n},(_,i)=>i).filter(i=>i%2===0)); syncSel(); };
+$("selOdd").onclick = () => { S.sel = new Set(Array.from({length:S.doc.n},(_,i)=>i).filter(i=>i%2===1)); syncSel(); };
+
+// ----------------------------------------------------------------- layout
+function renderLayout(){
+  if (!S.doc) return;
+  const L = S.doc.layout;
+  $("layoutkv").innerHTML =
+    "<b>frames</b><span>" + S.doc.n + "</span>" +
+    "<b>grid</b><span>" + L.columns + " \u00d7 " + L.rows + "</span>" +
+    "<b>cell</b><span>" + L.cell_w + " \u00d7 " + L.cell_h + "</span>" +
+    "<b>sheet</b><span>" + (L.columns*L.cell_w) + " \u00d7 " + (L.rows*L.cell_h) + "</span>" +
+    "<b>modified</b><span>" + S.doc.dirty.length + " cells</span>" +
+    "<b>undo</b><span>" + S.doc.undo + " levels</span>";
+  $("cols").value = L.columns;
+  $("cw").value = L.cell_w;
+  $("ch").value = L.cell_h;
+  $("metaName").value = S.doc.meta.name || "";
+  $("metaAnchor").value = S.doc.meta.anchor || "none";
+  $("metaBlend").value = S.doc.meta.blend || "straight";
+  $("fps").value = S.doc.meta.fps || 24;
+  // Only while the player's fps is still following the document. Once the box
+  // has been touched it belongs to the user, and an Apply metadata (or any other
+  // op that redraws this panel) must leave it alone -- otherwise changing the
+  // document's fps would quietly drag the preview with it, which is the coupling
+  // the separate control exists to break.
+  if (!S.playFpsOwn) $("playFps").value = S.doc.meta.fps || 24;
+  $("playMode").value = S.doc.meta.play_mode || "loop";
+  $("trimTo").value = S.doc.meta.trim_to || 0;
+  $("vBlack").value = S.doc.meta.black_max ?? 4;
+  $("vLeak").value = S.doc.meta.leak_alpha ?? 200;
+  $("vBright").value = S.doc.meta.bright ?? 64;
+  $("vErode").value = S.doc.meta.erode_max ?? 24;
+  const divs = divisors(S.doc.n).filter(d => d > 1 && d < S.doc.n);
+  $("colhint").textContent = divs.length
+    ? "valid columns: " + divs.slice(0, 24).join(", ") + (divs.length > 24 ? " \u2026" : "")
+    : "frame count is prime \u2014 the only full grid is 1 \u00d7 " + S.doc.n;
+  // The Pixelize fits list is a function of the cell size, which this panel
+  // just redrew -- and this runs after every op, so a re-grid refreshes it.
+  renderPoeFits();
+}
+function divisors(n){ const o = []; for (let i = 1; i <= n; i++) if (n % i === 0) o.push(i); return o; }
+$("applyCols").onclick = () => runSimple("set_columns", {columns: Number($("cols").value)});
+$("autoCols").onclick = () => runSimple("regrid_auto", {});
+$("applyCell").onclick = () => runSimple("set_cell",
+  {cell_w: Number($("cw").value), cell_h: Number($("ch").value)});
+$("applyMeta").onclick = () => applyMeta();
+
+// Apply metadata is the one panel that writes a file. The op route is a pure
+// change to the in-memory document -- nothing else in this page persists until
+// Save -- so metadata that only lived in memory was the surprise: the JSON
+// beside the sheet kept the old fps until the user also pressed Save, which
+// also rewrites the PNG, GIF and preview player. This does the narrow thing
+// instead: set the metadata, then write just the sidecar.
+//
+// Written as its own handler rather than chained onto runSimple so the second
+// step is skipped when the first one refuses -- a rejected fps must not be
+// followed by a write.
+async function applyMeta(){
+  if (!S.doc) return;
+  const ok = await runSimple("set_meta", {
+    fps: Number($("fps").value), play_mode: $("playMode").value,
+    trim_to: Number($("trimTo").value), anchor: $("metaAnchor").value,
+    blend: $("metaBlend").value, name: $("metaName").value});
+  if (!ok) return;
+  busy(true);
+  try {
+    const r = await api("/api/editor/" + S.doc.id + "/save_meta", {});
+    const line = "metadata written to " + r.sidecar;
+    $("status").textContent = line;
+    toast(line);
+  } catch(ex){
+    // The document kept the new metadata; only the file did not. Say so, and
+    // say why -- the usual reason is a grid change, which needs Save.
+    toast(ex.message);
+    $("status").textContent = "metadata NOT written: " + ex.message;
+  } finally { busy(false); }
+}
+
+async function runSimple(name, args){
+  // Returns true only if the op landed. applyMeta above has to tell "it worked"
+  // apart from "the server refused it" before it writes anything, and the
+  // refusal path here returns undefined otherwise.
+  if (!S.doc) return false;
+  busy(true);
+  let landed = false;
+  try {
+    const res = await api("/api/editor/" + S.doc.id + "/op",
+                          {name, sel: selArr(), args});
+    applyDoc(res.doc);
+    if (res.changed.length) await refreshCells(res.changed);
+    if (name === "set_cell") fitView();
+    $("status").textContent = res.msg;
+    toast(res.msg);
+    landed = true;
+  } catch(ex){
+    // A refusal arrives HERE, not as a returned {ok:false}: api() throws on
+    // `{ok:false, error}`, and every refusal from the op route carries one. So
+    // the handler for a refusal is this catch block -- putting it on an
+    // `if (!res.ok)` branch above leaves it unreachable, which is exactly what
+    // the first version of this did.
+    //
+    // The reason (a texture-cap overflow, a column count that does not divide)
+    // is the whole point of the refusal, so it goes to #status where it can be
+    // read rather than only into a 2-second toast -- and renderLayout() puts the
+    // form back to the value the document actually has, so it is not left
+    // showing the value that was just rejected.
+    toast(ex.message);
+    $("status").textContent = ex.message;
+    renderLayout();
+  }
+  finally { busy(false); draw(); renderTimeline(); }
+  return landed;
+}
+
+// -------------------------------------------------------------- undo/redo
+$("undo").onclick = async () => {
+  if (!S.doc) return;
+  busy(true);
+  const was = SHEET();
+  try {
+    const d = await api("/api/editor/" + S.doc.id + "/undo", {});
+    applyDoc(d.doc);
+    if (d.changed.length) await refreshCells(d.changed);
+    else { S.img.clear(); S.imgRev.clear(); await loadAllCells(); }
+    refitView(was); renderTimeline(); renderPreview();
+    $("status").textContent = d.restored ? "undo" : "nothing to undo";
+  } catch(ex){ toast(ex.message); }
+  finally { busy(false); }
+};
+$("redo").onclick = async () => {
+  if (!S.doc) return;
+  busy(true);
+  const was = SHEET();
+  try {
+    const d = await api("/api/editor/" + S.doc.id + "/redo", {});
+    applyDoc(d.doc);
+    if (d.changed.length) await refreshCells(d.changed);
+    else { S.img.clear(); S.imgRev.clear(); await loadAllCells(); }
+    refitView(was); renderTimeline(); renderPreview();
+    $("status").textContent = d.restored ? "redo" : "nothing to redo";
+  } catch(ex){ toast(ex.message); }
+  finally { busy(false); }
+};
+
+// ----------------------------------------------------------------- verify
+async function doVerify(){
+  if (!S.doc){ toast("open a sheet first"); return; }
+  busy(true);
+  try {
+    await runSimple("set_verify", {
+      black_max: Number($("vBlack").value), leak_alpha: Number($("vLeak").value),
+      bright: Number($("vBright").value), erode_max: Number($("vErode").value)});
+    const d = await api("/api/editor/" + S.doc.id + "/verify");
+    const b = $("vbadge");
+    b.textContent = d.passed ? "PASSED" : "FAILED";
+    b.className = "badge " + (d.passed ? "ok" : "bad");
+    $("vlog").textContent = d.lines.join("\n");
+    $("status").textContent = "verification " + (d.passed ? "passed" : "failed");
+  } catch(ex){ toast(ex.message); }
+  finally { busy(false); }
+}
+$("verify").onclick = doVerify;
+$("verify2").onclick = doVerify;
+
+// ------------------------------------------------------------------- save
+async function doSave(){
+  if (!S.doc){ toast("open a sheet first"); return; }
+  busy(true);
+  $("saveout").innerHTML = '<div class="hint">writing&hellip;</div>';
+  try {
+    const d = await api("/api/editor/" + S.doc.id + "/save", {
+      name: $("metaName").value || S.doc.meta.name,
+      out_dir: $("outDir").value.trim(),
+      // Off by default. The server refuses to write over the sheet this
+      // document was loaded from, because the output folder is free text and
+      // the name defaults to the source name -- so typing the source folder
+      // would otherwise destroy the original, with no undo.
+      overwrite: $("overwrite").checked,
+      // A subset export is a save-time view of the document, not an edit: the
+      // server builds a throwaway document out of these indices and leaves the
+      // open one untouched, so the undo history survives and the frames that
+      // were not selected are not destroyed. Sorted, so the frame order in the
+      // written sheet is the index order and not however the set iterated.
+      frames: $("onlySel").checked ? selArr() : [],
+      want_gif: $("wantGif").checked,
+      want_preview: $("wantPreview").checked,
+      gif_scale: Number($("gifScale").value) || 0.5,
+      gif_bg: $("gifBg").value});
+    let h = '<div class="okbox">saved to ' + esc(d.dir) + "</div>";
+    if (d.frames !== undefined && d.frames !== d.of)
+      h += '<div class="hint">' + d.frames + " of " + d.of +
+           " frames \u2014 the " + (d.of - d.frames) + " that were not selected " +
+           "were not written.</div>";
+    // Every artifact that was written is named, and linked when the app can
+    // serve it. "Not linkable" used to mean "not listed at all", which left the
+    // user with a folder path and no idea what to look for in it.
+    h += '<div class="row" style="margin-top:6px">';
+    for (const [k, v] of Object.entries(d.artifacts)){
+      const name = String(v).split(/[\\/]/).pop();
+      h += (d.served
+        ? '<a class="navlink" href="/files/' + v + '" target="_blank" '
+        : '<span class="chip" ') + 'title="' + esc(name) + '">' + k +
+        (d.served ? "</a> " : "</span> ");
+    }
+    h += "</div>";
+    // The one that matters after a subset export: carry on editing the frames
+    // that were just written, rather than being left holding the file and the
+    // 124 frames you started from. The button states the count, so "edit"
+    // cannot be mistaken for "open the sheet I came from".
+    if (d.sheet_path){
+      const n_saved = (d.frames !== undefined) ? d.frames : d.of;
+      h += '<div class="row" style="margin-top:6px">' +
+           '<button id="editSaved">' + (n_saved !== d.of
+             ? "edit the " + n_saved + " saved frames"
+             : "edit the saved sheet") + "</button>" +
+           '<span class="hint" style="margin-top:0">reopens it as the document ' +
+           'you are editing</span></div>';
+    }
+    if (!d.served)
+      h += '<div class="hint">Outside the app\u2019s runs folder, so the files are ' +
+           'not linkable here \u2014 open them from the folder above.</div>';
+    if (d.log && d.log.length) h += '<pre class="log">' + esc(d.log.join("\n")) + "</pre>";
+    $("saveout").innerHTML = h;
+    // Reopen the sheet that was just written, so a subset export can be iterated
+    // on. It is an ordinary open: the file has a sidecar beside it, so the grid
+    // is discovered rather than guessed. The document that is open now is NOT
+    // closed or discarded on disk -- it is only replaced on this page, and it can
+    // be reopened from the open-by-path box.
+    const eb = $("editSaved");
+    if (eb) eb.onclick = () => {
+      $("sheetPath").value = d.sheet_path;
+      openSheet(d.sheet_path);
+    };
+    $("status").textContent = "saved " + d.dir;
+  } catch(ex){
+    $("saveout").innerHTML = '<div class="err">' + esc(ex.message) + "</div>";
+  } finally { busy(false); }
+}
+$("save").onclick = doSave;
+$("save2").onclick = doSave;
+function esc(s){ return String(s).replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
+
+// -------------------------------------------------------------- open sheet
+// The last ten folders a document was opened from, newest first. This replaced
+// the server's sheet-library listing: the editor is used by giving a path, and a
+// run writes a fresh folder every time, so the folders actually visited are worth
+// more than a scan of every sheet on the server.
+//
+// A "folder" is the directory the opened document came from, which makes it the
+// same thing whether the user typed a folder, the sidecar JSON or the sheet PNG.
+const RECENT_KEY = "sprite.recentFolders";
+const RECENT_MAX = 10;
+
+// Both separators, because the paths come from a text box on Windows and a user
+// may paste either.
+function dirOf(p){
+  const i = Math.max(p.lastIndexOf("\\"), p.lastIndexOf("/"));
+  return i > 0 ? p.slice(0, i) : "";
+}
+function baseOf(p){
+  const i = Math.max(p.lastIndexOf("\\"), p.lastIndexOf("/"));
+  return i >= 0 ? p.slice(i + 1) : p;
+}
+function recentFolders(){
+  try {
+    const a = JSON.parse(localStorage.getItem(RECENT_KEY) || "[]");
+    return Array.isArray(a) ? a.filter(e => e && e.dir) : [];
+  } catch(e){ return []; }   // private mode or bad JSON: an empty list, not a crash
+}
+// `path` is kept beside the folder because the folder is not always enough to
+// reopen from: a sheet opened by PNG with explicit columns and rows has no
+// sidecar in its folder, so folder resolution would refuse it. The row still
+// reads as a folder, and the exact path is the fallback.
+function rememberFolder(dir, n, cols, rows, path){
+  if (!dir) return;          // a bare filename has no folder to come back to
+  // Case-insensitive, because the filesystem is: the same folder with a
+  // different drive-letter case is the same folder, and listing it twice is the
+  // bug this prevents.
+  const rest = recentFolders().filter(e => e.dir.toLowerCase() !== dir.toLowerCase());
+  const next = [{dir, path: path || dir, name: baseOf(dir) || dir, n: n || 0,
+                 cols: cols || 0, rows: rows || 0, at: Date.now()},
+                ...rest].slice(0, RECENT_MAX);
+  try { localStorage.setItem(RECENT_KEY, JSON.stringify(next)); } catch(e){}
+  renderRecent();
+}
+function renderRecent(){
+  const list = recentFolders();
+  const box = $("recent");
+  // The list panel was removed from the DOM on request. `rememberFolder` still
+  // calls this, so it has to no-op rather than throw on a null element -- the
+  // remembered folders are still used to reopen the last sheet.
+  if (!box) return;
+  if (!list.length){
+    box.innerHTML = '<div class="hint">nothing opened yet &mdash; give a path '
+                  + 'below and the folder it lands in is remembered here.</div>';
+    return;
+  }
+  box.innerHTML = list.map((e, k) =>
+    '<div data-k="' + k + '" title="' + esc(e.dir) + '">' +
+    '<span class="n">' + esc(e.name) + "</span>" +
+    '<span class="m">' + (e.n ? e.n + "f" : "") + "</span></div>").join("");
+  box.querySelectorAll("div[data-k]").forEach(el => {
+    const e = list[Number(el.dataset.k)];
+    el.onclick = async () => {
+      // The folder, not the file that was opened from it: that is what the row
+      // says, and folder resolution is what finds the sidecar again if the
+      // document has been renamed since.
+      if (!(await openSheet(e.dir, e.cols, e.rows)) && e.path !== e.dir)
+        await openSheet(e.path, e.cols, e.rows);
+    };
+  });
+}
+// The sheet the editor reopens on the next visit.
+//
+// The server keeps its documents in memory and the page holds no pixels, so
+// reopening by path is the only way to "come back to what I was doing" after a
+// reload or a server restart -- there is nothing else to restore. Kept in
+// localStorage rather than the URL so the generator's "edit this sheet" link
+// (?sheet=...) still wins when it is present.
+const LAST_SHEET_KEY = "sprite.lastSheet";
+function rememberSheet(path, cols, rows){
+  try {
+    localStorage.setItem(LAST_SHEET_KEY,
+      JSON.stringify({path, cols: cols || 0, rows: rows || 0}));
+  } catch(e){ /* private mode / quota -- remembering is a nicety, not a need */ }
+}
+function lastSheet(){
+  try { return JSON.parse(localStorage.getItem(LAST_SHEET_KEY) || "null"); }
+  catch(e){ return null; }
+}
+async function openSheet(path, cols, rows){
+  // Returns true only if a document is actually loaded. recoverFromRestart has
+  // to tell "it came back" apart from "it is gone" before it words its status
+  // line, and a bare `undefined` cannot express that.
+  busy(true);
+  $("status").textContent = "opening " + path;
+  try {
+    const d = await api("/api/editor/open",
+      {sheet: path, columns: cols || 0, rows: rows || 0});
+    S.img.clear(); S.imgRev = new Map(); S.sel.clear();
+    S.cur = 0; S.playing = false; $("play").textContent = "Play";
+    applyDoc(d.doc);
+    // What the server resolved, not what was typed: give it a folder and the box
+    // ends up naming the sidecar it found in there, so the user can see which
+    // sheet a folder turned out to mean.
+    const opened = d.doc.sidecar || path;
+    $("sheetPath").value = opened;
+    await loadAllCells((k, n) => { $("status").textContent = "loading cells " + k + "/" + n; });
+    fitView();
+    renderTimeline(); renderPreview(); renderLayout();
+    $("status").textContent = "opened " + d.doc.n + " frames from " + opened;
+    rememberSheet(opened, cols, rows);
+    // Derived from what the server RESOLVED, not from what was typed: give it a
+    // folder and the folder recorded is the one the sidecar actually lives in,
+    // which is what makes the entry reopenable later.
+    rememberFolder(dirOf(opened), d.doc.n, cols, rows, opened);
+    return true;
+  } catch(ex){
+    toast(ex.message);
+    $("status").textContent = ex.message;
+    $("docname").textContent = "no sheet open";
+    return false;
+  } finally { busy(false); }
+}
+$("openPath").onclick = () => {
+  const p = $("sheetPath").value.trim();
+  if (!p){ toast("give a path"); return; }
+  openSheet(p);
+};
+
+// ------------------------------------------------------------------- zoom
+$("fit").onclick = fitView;
+$("zoom100").onclick = () => {
+  if (!S.doc) return;
+  S.view.s = 1;
+  const {w,h} = SHEET();
+  S.view.tx = (view.width/DPR - w)/2; S.view.ty = (view.height/DPR - h)/2;
+  draw();
+};
+$("zIn").onclick = () => zoomAt(1.25, view.width/DPR/2, view.height/DPR/2);
+$("zOut").onclick = () => zoomAt(1/1.25, view.width/DPR/2, view.height/DPR/2);
+// A fitted Snap Pixels preview has to follow the left panel's width, so it is
+// re-fitted whenever the window is resized (after layout, not during it).
+window.addEventListener("resize", () => {
+  if (!SNAP || !SNAP.fit) return;
+  requestAnimationFrame(() => { if (SNAP && SNAP.fit) snapFitNow(); });
+});
+// Set an exact zoom factor, centred. Used by Snap Pixels to bring a shrunk
+// frame back to the size it was before the snap, pixel-for-pixel.
+function zoomTo(f){
+  if (!S.doc) return;
+  const vw = view.width / DPR, vh = view.height / DPR;
+  const {w, h} = SHEET();
+  S.view.s = Math.max(0.02, Math.min(128, f));
+  S.view.tx = (vw - w * S.view.s) / 2;
+  S.view.ty = (vh - h * S.view.s) / 2;
+  draw();
+}
+
+// -------------------------------------------------------------- keyboard
+// One handler. Two overlapping keydown listeners previously both consumed the
+// arrow keys, so frame stepping and nudging fought each other.
+window.addEventListener("keydown", e => {
+  const el = e.target;
+  const tag = (el.tagName || "").toLowerCase();
+  if (tag === "select" || tag === "textarea") return;
+  if (tag === "input"){
+    // Escape or Enter hands the keyboard back to the page. Without this the only
+    // way out of a toolbar box is to click something else, and every shortcut
+    // below is dead for as long as it holds focus.
+    if (e.key === "Escape" || e.key === "Enter"){
+      el.blur(); e.preventDefault(); return;
+    }
+    // A number/colour/range box cannot contain a letter, so a letter pressed
+    // there is unambiguously a shortcut rather than typing. Anything that takes
+    // free text -- a path, a name -- still swallows every key, as it must.
+    //
+    // This matters because setting the brush size is the FIRST thing you do
+    // before drawing: it left focus in that box, and then B for the pencil and E
+    // for the eraser did nothing at all. Which is the other half of "the eraser
+    // and pencil are not working".
+    const freeText = ["text", "search", "url", "email", "password", "tel"]
+      .includes((el.type || "text").toLowerCase());
+    if (freeText || !/^[A-Za-z]$/.test(e.key)) return;
+  }
+  const k = e.key;
+  const mod = e.ctrlKey || e.metaKey;
+
+  if (mod && k.toLowerCase() === "z"){ e.preventDefault();
+    (e.shiftKey ? $("redo") : $("undo")).click(); return; }
+  if (mod && k.toLowerCase() === "s"){ e.preventDefault(); doSave(); return; }
+  if (mod && k.toLowerCase() === "a"){ e.preventDefault(); $("selAll").click(); return; }
+  if (mod && k.toLowerCase() === "c"){ e.preventDefault(); copyCells(); return; }
+  if (mod && k.toLowerCase() === "v"){ e.preventDefault(); pasteCells(); return; }
+  if (mod && k.toLowerCase() === "x"){ e.preventDefault(); copyCells(); clearCells(); return; }
+  if (mod) return;
+
+  // Delete clears the selected frame(s) outright -- "delete everything inside
+  // the frame" without dragging the eraser over every pixel.
+  if (k === "Delete"){ e.preventDefault(); clearCells(); return; }
+
+  // Escape closes the big preview. First, so it works even mid-drag: the
+  // modal covers the sheet and the drag cannot continue meaningfully anyway.
+  if (k === "Escape" && BIG.open){
+    e.preventDefault();
+    closeBig();
+    return;
+  }
+  // Escape abandons a transform in flight. Nothing has been sent at this point
+  // -- the box only ever previews -- so this is a true cancel, not an undo.
+  if (k === "Escape" && drag && drag.kind === "xform"){
+    e.preventDefault();
+    drag = null; S.xformLive = null; draw();
+    return;
+  }
+
+  if (k === "v" || k === "V") return setTool("select");
+  if (k === "h" || k === "H") return setTool("pan");
+  if (k === "b" || k === "B") return setTool("pencil");
+  if (k === "e" || k === "E") return setTool("erase");
+  if (k === "i" || k === "I") return setTool("pick");
+  if (k === "t" || k === "T") return setXform(!S.xform);
+  if (k === "d" || k === "D") return toggleTheme();
+  if (k === "0") return fitView();
+  if (k === "1") return $("zoom100").click();
+  if (k === " "){ e.preventDefault(); return $("play").click(); }
+  if (!S.doc) return;
+
+  if (k === "ArrowLeft" || k === "ArrowRight"){
+    e.preventDefault();
+    if (e.altKey){
+      const step = e.shiftKey ? 10 : 1;
+      runSimple("offset", {dx: k === "ArrowLeft" ? -step : step, dy: 0, wrap: false});
+    } else {
+      const dir = k === "ArrowLeft" ? -1 : 1;
+      const st = scrubState();
+      // With "play selection only" the arrows walk the selection: a frame the
+      // preview never plays is not one you are stepping through.
+      S.cur = st.order
+        ? st.order[Math.max(0, Math.min(st.order.length - 1,
+                                       orderPos(st.order, S.cur) + dir))]
+        : Math.max(0, Math.min(S.doc.n - 1, S.cur + dir));
+      renderPreview(); markTimelineCurrent(); draw();
+    }
+    return;
+  }
+  if (k === "ArrowUp" || k === "ArrowDown"){
+    e.preventDefault();
+    const step = e.shiftKey ? 10 : 1;
+    runSimple("offset", {dx: 0, dy: k === "ArrowUp" ? -step : step, wrap: false});
+    return;
+  }
+});
+
+// ------------------------------------------------------------------- theme
+// The attribute carries the state, and the pre-paint script in <head> plus the
+// CSS are the only other things that read it. Same key as the generator, so the
+// tool is in one theme, not one per page. The label names the theme it switches
+// TO, so "Dark" on a light page cannot be misread as a status of the page you
+// are looking at.
+const THEME_KEY = "sprite.theme";
+let STAGE = "#f5f5f5";
+function setTheme(t){
+  document.documentElement.dataset.theme = t;
+  try { localStorage.setItem(THEME_KEY, t); } catch(e){ /* private mode */ }
+  STAGE = getComputedStyle(document.documentElement)
+            .getPropertyValue("--stage").trim() || STAGE;
+  const b = $("theme");
+  b.textContent = t === "dark" ? "Light" : "Dark";
+  b.title = t === "dark" ? "switch to the light theme"
+                          : "switch to the dark theme";
+  draw();
+}
+function toggleTheme(){
+  setTheme(document.documentElement.dataset.theme === "dark" ? "light"
+                                                                  : "dark");
+}
+$("theme").onclick = toggleTheme;
+// Runs before boot(), so the stage colour the first draw() uses is already the
+// one the CSS says. No document is open yet, so this paints the empty sheet area
+// and returns.
+setTheme(document.documentElement.dataset.theme || "light");
+
+// ------------------------------------------------------------------- boot
+// The page is re-read from disk on every request, but the server's Python is
+// frozen at process start. So a server started before the last change serves the
+// old body of a route that exists -- nothing 404s, nothing errors, and a fix that
+// IS on disk is simply absent. That is indistinguishable from broken code from
+// here, and it has arrived as a bug report three times ("overwriting not
+// working", "when i click play button it says can not play and volume setting
+// says http 404"). The server compares its own load time against the files on
+// disk, so the page only has to ask.
+async function checkServerFreshness(){
+  try {
+    const d = await api("/api/editor/version");
+    if (!d || !Array.isArray(d.stale)) return;
+    const b = $("stale");
+    const who = "server pid " + d.pid + ", started " + d.started;
+    if (!d.stale.length){
+      // Hovering the footer says which process is answering. It is also what
+      // makes "no badge" mean the check ran and found nothing, rather than that
+      // it never ran at all.
+      b.title = who + " \u2014 its code matches the files on disk";
+      return;
+    }
+    b.classList.add("on");
+    b.textContent = "server is stale";
+    b.title = who + ", and " + d.stale.join(" and ") + " changed since. It is "
+      + "serving old code, so a fix on disk can be missing. Restart it.";
+    toast("the server is running older code than this page \u2014 restart it");
+  } catch(e){
+    // A server older than this check has no such route. Nothing to say: a 404
+    // here is the one case the check cannot report on.
+  }
+}
+(async function boot(){
+  $("build").textContent = BUILD;
+  checkServerFreshness();
+  resize();
+  await loadOps();
+  renderRecent();
+  // Not awaited: the sheet open below is what the visit is for, and a folder
+  // listing is not a precondition for it.
+  restoreLibDir();
+  setTool("select");
+  syncOnlySel();          // nothing is selected yet, so the export box starts off
+  syncLoopSel();
+  const want = new URLSearchParams(location.search).get("sheet");
+  if (want){
+    // The ?sheet= address is a launch vehicle, not state: once read, take it
+    // out of the address bar so a long filesystem path is not sitting in the
+    // URL for the whole session. Reloads reopen from the remembered sheet.
+    history.replaceState(null, "", location.pathname);
+    $("sheetPath").value = want; openSheet(want); return;
+  }
+  // No explicit sheet in the URL: reopen the one that was open last time, so a
+  // reload or a server restart lands back where the user was. A path that no
+  // longer opens (moved/deleted file) is forgotten rather than retried on every
+  // visit, and its error is already in the status line from the failed open.
+  const last = lastSheet();
+  if (last && last.path){
+    $("sheetPath").value = last.path;
+    if (!(await openSheet(last.path, last.cols, last.rows))){
+      try { localStorage.removeItem(LAST_SHEET_KEY); } catch(e){}
+    }
+  }
+})();
+</script>
+</body>
+</html>

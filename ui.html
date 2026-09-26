@@ -1,0 +1,855 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="/favicon.ico" sizes="any">
+<title>Tost AI Sprite Studio</title>
+<script>
+// The theme is set before the first paint, or a dark page flashes the light
+// palette and then repaints. Same key as the editor, so the two pages agree
+// about which theme the tool is in; no stored choice follows the OS.
+(function(){
+  var t = null;
+  try { t = localStorage.getItem("sprite.theme"); } catch(e){}
+  if (t !== "light" && t !== "dark")
+    t = window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches
+      ? "dark" : "light";
+  document.documentElement.dataset.theme = t;
+})();
+</script>
+<style>
+  :root{
+    /* TostUI's palette (TostUI/app/globals.css), mapped onto this page's roles.
+       The editor carries the same block. Values taken verbatim are named as
+       such; the rest are further steps of the same Tailwind scales TostUI draws
+       on, because a colour that is fine as a button fill is often not fine as
+       12px text -- TostUI's own --primary under its white foreground is 3.68:1,
+       which the contrast rule below will not pass. */
+    --bg:#f9fafb; --panel:#fff; --panel2:#f9fafb; --bd:#e5e7eb; --bd2:#eef0f2;
+    --tx:#4b5563; --mut:#5b6472; --acc:#0e7490; --acc2:#ecfeff;
+    /* The accent as a FILL is its own pair: --acc is tuned to be read as text
+       (links, the active tool, a hot drop zone), and white-on-a-fill has the
+       opposite requirement, so the two jobs get two variables. */
+    --accbg:#0e7490; --acctext:#fff; --acch:#155e75;
+    --ok:#15803d; --okbg:#f0fdf4; --bad:#be123c; --badbg:#fff1f2;
+    --warn:#c2410c; --warnbg:#fff7ed; --stage:#f5f5f5;
+    color-scheme:light;
+  }
+  /* Dark theme. Same variable names, so no rule below has to know which one is
+     active. TostUI's dark block is near-black rather than #000 and its cards sit
+     a step above it, because a panel edge has to stay a visible edge.
+     color-scheme hands the browser's own parts -- scrollbars, number spinners,
+     the checkbox and select chrome -- over to the same decision. */
+  html[data-theme="dark"]{
+    --bg:#1a1a1a; --panel:#2d2d2d; --panel2:#242424; --bd:#4a4a4a; --bd2:#3f3f3f;
+    --tx:#e0e0e0; --mut:#b4b4b4; --acc:#22d3ee; --acc2:#123a42;
+    --accbg:#0891b2; --acctext:#1a1a1a; --acch:#22d3ee;
+    --ok:#4ade80; --okbg:#14301f; --bad:#f87171; --badbg:#3a1d1d;
+    --warn:#ffd700; --warnbg:#332c12; --stage:#1a1a1a;
+    color-scheme:dark;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--tx);
+       font:14px/1.5 "Segoe UI",system-ui,-apple-system,sans-serif}
+  header{background:var(--panel);border-bottom:1px solid var(--bd);
+         padding:12px 20px;display:flex;align-items:baseline;gap:14px;flex-wrap:wrap}
+  /* The TostUI mark. Inlined, because this page has no external
+     references at all and should keep rendering off disk. The alt is
+     empty on purpose: the h1 beside it already says the name, and a
+     second reading of it is noise on a screen reader. */
+  header img.logo{width:30px;height:30px;display:block;flex:none;
+                  align-self:center}
+  header h1{font-size:16px;margin:0;font-weight:650}
+  header .env{font-size:12px;color:var(--mut)}
+  .layout{display:grid;grid-template-columns:minmax(340px,420px) 1fr;gap:16px;
+          padding:16px;align-items:start}
+  @media(max-width:900px){.layout{grid-template-columns:1fr}}
+  .panel{background:var(--panel);border:1px solid var(--bd);border-radius:10px;
+         margin-bottom:12px;overflow:hidden}
+  .panel>summary{cursor:pointer;padding:10px 14px;font-weight:600;font-size:13px;
+                 list-style:none;display:flex;justify-content:space-between;
+                 align-items:center;user-select:none}
+  .panel>summary::-webkit-details-marker{display:none}
+  .panel>summary:after{content:"+";color:var(--mut);font-weight:400}
+  .panel[open]>summary:after{content:"–"}
+  .panel>summary:hover{background:var(--bd2)}
+  .body{padding:4px 14px 14px;border-top:1px solid var(--bd2)}
+  label{display:block;font-size:12px;color:var(--mut);margin:10px 0 3px}
+  label:first-child{margin-top:8px}
+  input[type=text],input[type=number],select{width:100%;padding:6px 8px;
+    border:1px solid var(--bd);border-radius:6px;font:inherit;
+    background:var(--panel);color:var(--tx)}
+  input[type=range]{width:100%;accent-color:var(--acc)}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}
+  .chk{display:flex;align-items:center;gap:7px;margin:8px 0;font-size:13px;color:var(--tx)}
+  .chk input{accent-color:var(--acc)}
+  .hint{font-size:11.5px;color:var(--mut);margin-top:4px;line-height:1.45}
+  button{font:inherit;padding:7px 13px;border:1px solid var(--bd);
+         background:var(--panel);border-radius:7px;cursor:pointer;color:var(--tx)}
+  button:hover:not(:disabled){background:var(--bd2)}
+  button:disabled{opacity:.5;cursor:default}
+  button.primary{background:var(--accbg);border-color:var(--accbg);
+                 color:var(--acctext);font-weight:600}
+  button.primary:hover:not(:disabled){background:var(--acch);border-color:var(--acch)}
+  .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  .drop{border:2px dashed var(--bd);border-radius:9px;padding:14px;text-align:center;
+        color:var(--mut);font-size:12.5px;margin-top:8px}
+  .drop.hot{border-color:var(--acc);background:var(--acc2);color:var(--acc)}
+  .vpreview{margin-top:10px}
+  .vpreview img{max-width:100%;border-radius:6px;border:1px solid var(--bd)}
+  /* The clip is the point of this panel: you cannot tell whether a matte is
+     worth running from a single still, so the preview is the video itself. */
+  .vpreview video{display:block;width:100%;max-height:min(46vh,420px);
+    background:#000;border-radius:6px;border:1px solid var(--bd)}
+  .vpreview .cap{margin-top:5px}
+  .kv{display:grid;grid-template-columns:auto 1fr;gap:2px 12px;font-size:12.5px;margin-top:8px}
+  .kv b{font-weight:600;color:var(--mut);white-space:nowrap}
+  .bar{height:8px;background:var(--bd2);border-radius:5px;overflow:hidden;margin:8px 0}
+  .bar>i{display:block;height:100%;width:0;background:var(--acc);transition:width .2s}
+  .stage{font-size:12.5px;color:var(--mut);display:flex;justify-content:space-between}
+  pre.log{background:var(--panel2);border:1px solid var(--bd2);border-radius:8px;
+          padding:10px;font:11.5px/1.5 ui-monospace,Consolas,monospace;
+          max-height:240px;overflow:auto;white-space:pre-wrap;margin:8px 0 0}
+  .badge{display:inline-block;padding:2px 9px;border-radius:20px;font-size:12px;font-weight:600}
+  .badge.ok{background:var(--okbg);color:var(--ok)}
+  .badge.bad{background:var(--badbg);color:var(--bad)}
+  .badge.warn{background:var(--warnbg);color:var(--warn)}
+  .badge.mut{background:var(--bd2);color:var(--mut)}
+  .arts{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+  .arts a{display:inline-flex;align-items:center;gap:6px;padding:6px 11px;
+          border:1px solid var(--bd);border-radius:7px;text-decoration:none;
+          color:var(--tx);background:var(--panel);font-size:12.5px}
+  .arts a:hover{background:var(--bd2)}
+  .sheetwrap{margin-top:10px;border:1px solid var(--bd);border-radius:8px;overflow:auto;
+             max-height:420px;background:
+               linear-gradient(45deg,#e9e9e9 25%,transparent 25%,transparent 75%,#e9e9e9 75%),
+               linear-gradient(45deg,#e9e9e9 25%,#fff 25%,#fff 75%,#e9e9e9 75%);
+             background-size:18px 18px;background-position:0 0,9px 9px}
+  .sheetwrap img{display:block;image-rendering:pixelated}
+  /* The player is a page in its own right and has its own window: a fixed
+     430px showed the top half of a 640px cell and hid the controls. It gets the
+     viewport height (less the header it sits under) and its own scrolling. */
+  iframe.pv{width:100%;height:min(80vh,1200px);min-height:360px;
+            border:1px solid var(--bd);border-radius:8px;
+            margin-top:10px;background:var(--panel)}
+  .err{background:var(--badbg);color:var(--bad);padding:10px;border-radius:8px;
+       font-size:12.5px;margin-top:10px;white-space:pre-wrap}
+  .warnbox{background:var(--warnbg);color:var(--warn);padding:9px 11px;border-radius:8px;
+           font-size:12.5px;margin-top:8px}
+  .muted{color:var(--mut)}
+  .okbox{background:var(--okbg);color:var(--ok);padding:9px 11px;border-radius:8px;
+         font-size:12.5px;margin-top:8px}
+  /* Update dialog. A plain overlay rather than <dialog>: this page has no other
+     modal, and an overlay keeps the theme variables in charge of the surface
+     instead of fighting the UA stylesheet's own backdrop, border and centring. */
+  .ovl{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:50;padding:20px;
+       display:flex;align-items:center;justify-content:center}
+  .ovl[hidden]{display:none}
+  .dlg{background:var(--panel);border:1px solid var(--bd);border-radius:12px;
+       padding:16px 18px;width:min(470px,100%);max-height:90vh;overflow:auto;
+       box-shadow:0 12px 40px rgba(0,0,0,.35)}
+  .dlg h3{margin:0 0 4px;font-size:15px}
+  .dlg input[type=password]{width:100%;padding:6px 8px;border:1px solid var(--bd);
+       border-radius:6px;font:inherit;background:var(--panel);color:var(--tx)}
+  .dlg .row{justify-content:flex-end;margin-top:14px}
+</style>
+</head>
+<body>
+<header>
+  <img class="logo" alt="" src="data:image/png;base64,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">
+  <h1>Tost AI Sprite Studio</h1>
+  <span class="env" id="env"></span>
+  <span style="flex:1"></span>
+  <button id="theme" title="switch to the dark theme">Dark</button>
+  <button id="upd" title="fetch the latest source from the repository and restart">Update</button>
+  <a href="/editor" style="font-size:12.5px;color:var(--acc);text-decoration:none">
+    Open the editor &rarr;</a>
+</header>
+
+<div class="layout">
+  <!-- ---------------------------------------------------------------- left -->
+  <div>
+    <details class="panel" open>
+      <summary>1 &middot; Input video</summary>
+      <div class="body">
+        <label>Path on this machine</label>
+        <input type="text" id="video" placeholder="C:\...\clip.mp4">
+        <div class="row" style="margin-top:8px">
+          <button id="browse">Browse&hellip;</button>
+          <button id="probe">Read video</button>
+        </div>
+        <div class="drop" id="drop">or drop a video file here to upload</div>
+        <div id="vinfo"></div>
+      </div>
+    </details>
+
+    <details class="panel" open>
+      <summary>2 &middot; Background removal</summary>
+      <div class="body">
+        <div class="chk"><input type="checkbox" id="do_matte" checked>
+          <span>Remove background with VRMBG-3.0</span></div>
+        <label>Model folder</label>
+        <input type="text" id="model_dir">
+        <div class="grid2">
+          <div>
+            <label>Inference size</label>
+            <select id="infer_size">
+              <option value="1024" selected>1024 &mdash; trained size (slowest)</option>
+              <option value="768">768 &mdash; balanced</option>
+              <option value="640">640 &mdash; fastest (~2&times;)</option>
+            </select>
+          </div>
+          <div>
+            <label>Frame step</label>
+            <input type="number" id="frame_step" value="1" min="1" step="1">
+          </div>
+        </div>
+        <div class="grid2">
+          <div><label>Start frame</label><input type="number" id="start" value="1" min="1"></div>
+          <div><label>End frame (0 = all)</label><input type="number" id="end" value="0" min="0"></div>
+        </div>
+        <div class="hint">Picked from the clip when you read it: the largest size
+          that does not exceed its longer edge (1024 / 768 / 640), so a 640px
+          sprite clip is not matted at 1024. Matching a small source is
+          ~2&times; faster and agrees with the 1024 matte to a mean of 0.0055.
+          Override it for real footage.</div>
+      </div>
+    </details>
+
+    <details class="panel" open>
+      <summary>3 &middot; Matte repair</summary>
+      <div class="body">
+        <div class="chk"><input type="checkbox" id="do_repair">
+          <span>Clear leaked backdrop (border flood-fill)</span></div>
+        <label>Black threshold <span class="muted" id="black_max_v">4</span></label>
+        <input type="range" id="black_max" min="0" max="24" value="4">
+        <div class="chk"><input type="checkbox" id="repair_border_only">
+          <span>Only regions touching the frame border</span></div>
+        <div class="hint">Topological, not tonal: the backdrop touches the frame border,
+          the subject's own dark pixels are enclosed by its body. Set the threshold just
+          above the backdrop's own noise floor.<br>
+          Unticked it stops being topological: every near-black pixel goes, enclosed
+          ones included. That reaches backdrop the subject cut off from the border
+          &mdash; inside a handle, between an arm and the body &mdash; and eats the
+          subject's own dark parts with it, an outline or a boot. Which of those is
+          worse is yours to decide, so the box is on.</div>
+        <div class="chk"><input type="checkbox" id="do_key">
+          <span>Clear chroma-key edge leak (colour key)</span></div>
+        <div class="grid2">
+          <div><label>Backdrop colour</label>
+               <input type="color" id="key_color" value="#00ff00"></div>
+          <div><label>Tolerance <span class="muted" id="key_tol_v">96</span></label>
+               <input type="range" id="key_tol" min="0" max="255" value="96"></div>
+        </div>
+        <div class="chk"><input type="checkbox" id="key_also_connected">
+          <span>Also clear key-coloured regions touching the frame border</span></div>
+        <div class="hint">The other half of the same job, and the one a green screen
+          needs. It is tonal instead of topological &mdash; the flood fill reaches only
+          backdrop connected to the frame border, so a green edge <i>hugging</i> the
+          subject is enclosed by it and never seen. Pixels within the tolerance of the
+          picked colour (straight RGB distance, 0 = exact match) that sit within 6 px of
+          transparency lose their alpha. Reading the clip seeds the picker with the
+          clip's own border colour; the tolerance is the destructive dial. This pass is
+          for a <i>chroma</i> backdrop though &mdash; on a near-black one the flood fill
+          above is the better tool, because it walks the border in instead of cutting a
+          6 px ring off the contour.<br>
+          The box ADDS the same topological test on top of the band: every
+          key-coloured region reachable from the frame border goes too &mdash; a slab of
+          backdrop left along a frame edge, opaque and deeper than the band, is the
+          leak it catches. Ticking it can only clean <i>more</i>; unticked, the key is
+          the 6 px band alone. An enclosed patch of the key colour &mdash; a subject
+          painted like the backdrop &mdash; is never touched in either state.<br>
+          The pass also takes the colour out of the <i>spill</i> it cannot match.
+          Backdrop light bleeding into the outline leaves dark green pixels
+          (0,50,0) that are 200+ away from any green key, so no tolerance reaches
+          them &mdash; at 255 the subject's own mid-greys are 205 away and go with them,
+          which is why raising the tolerance eats the sprite and still shows green.
+          Green is clamped to the larger of red and blue there instead: the outline
+          turns black, nothing is deleted and no alpha changes. The despill reaches
+          the 6 px band around full transparency <i>plus every semi-transparent
+          pixel</i>, wherever it sits &mdash; measured on real sheets the leftover
+          spill is soft alpha up to 21 px deep, which a fixed band misses. Only
+          fully opaque pixels are reachable through the band, so a subject's
+          interior saturation is never touched. Raise the tolerance
+          if green still shows as a grey rim instead.</div>
+      </div>
+    </details>
+
+    <details class="panel" open>
+      <summary>4 &middot; Sheet layout</summary>
+      <div class="body">
+        <label>Cell mode</label>
+        <select id="cell_mode">
+          <option value="subject" selected>subject &mdash; crop tight to the subject</option>
+          <option value="none">none &mdash; full frame per cell</option>
+          <option value="fixed">fixed &mdash; explicit cell size</option>
+        </select>
+        <div class="grid2">
+          <div><label>Padding <span class="muted" id="pad_v">6</span></label>
+               <input type="range" id="pad" min="0" max="64" value="6"></div>
+          <div><label>Max texture <span class="muted" id="maxtex_v">327680</span></label>
+               <input type="range" id="max_texture" min="2048" max="327680" step="1024" value="327680"></div>
+        </div>
+        <div class="grid2">
+          <div><label>Cell width (fixed)</label><input type="number" id="cell_w" value="0" min="0"></div>
+          <div><label>Cell height (fixed)</label><input type="number" id="cell_h" value="0" min="0"></div>
+        </div>
+        <div class="chk"><input type="checkbox" id="square_cell"><span>Force square cells</span></div>
+        <label>Columns</label>
+        <select id="columns"><option value="0" selected>auto</option></select>
+        <div class="hint">A grid must be full: <b>columns &times; rows = frame count</b>, or engines
+          play the empty cells as blank frames. The column list is therefore the divisors of
+          the frame count, and the auto choice minimises the largest sheet dimension.</div>
+      </div>
+    </details>
+
+    <details class="panel">
+      <summary>5 &middot; Playback</summary>
+      <div class="body">
+        <div class="grid2">
+          <div><label>fps</label><input type="number" id="fps" value="24" min="1" max="120"></div>
+          <div><label>Mode</label>
+            <select id="play_mode">
+              <option value="loop" selected>loop</option>
+              <option value="pingpong">ping-pong</option>
+              <option value="once">one-shot</option>
+            </select></div>
+        </div>
+        <label>Trim playback to frame (0 = last)</label>
+        <input type="number" id="trim_to" value="0" min="0">
+        <div class="grid2">
+          <div><label>Anchor</label>
+            <select id="anchor"><option value="none">none</option>
+              <option value="bottom-center">bottom-center</option></select></div>
+          <div><label>Blend</label>
+            <select id="blend"><option value="straight">straight</option>
+              <option value="additive">additive</option></select></div>
+        </div>
+        <div class="hint">Trim is metadata only &mdash; the sheet keeps every frame, but
+          playback stops before the given frame. Useful when a clip's tail is unusable.</div>
+      </div>
+    </details>
+
+    <details class="panel">
+      <summary>6 &middot; Outputs</summary>
+      <div class="body">
+        <div class="chk"><input type="checkbox" id="want_sheet" checked><span>Sprite sheet PNG</span></div>
+        <div class="chk"><input type="checkbox" id="want_sidecar" checked><span>Sidecar JSON</span></div>
+        <div class="chk"><input type="checkbox" id="want_preview" checked><span>Preview HTML player</span></div>
+        <div class="chk"><input type="checkbox" id="want_gif"><span>Animated GIF</span></div>
+        <div class="chk"><input type="checkbox" id="want_frames"><span>Keep individual frames</span></div>
+        <div class="grid2">
+          <div><label>GIF scale <span class="muted" id="gif_scale_v">0.5</span></label>
+               <input type="range" id="gif_scale" min="0.1" max="1" step="0.05" value="0.5"></div>
+          <div><label>GIF background</label>
+            <select id="gif_bg"><option value="checker">checkerboard</option>
+              <option value="solid">solid light</option></select></div>
+        </div>
+      </div>
+    </details>
+
+    <details class="panel">
+      <summary>7 &middot; Verification</summary>
+      <div class="body">
+        <!-- Off by default on request: the gate is opt-in now. The checkbox stays
+             a live control (not disabled) so it can be ticked per run -- it is the
+             DEFAULT that changed, not the availability. `collect()` sends
+             el.checked, so this opts the build out of verify_sheet() unless ticked.
+             pipeline.DEFAULT_CFG says do_verify: False to match, so /api/defaults
+             does not re-tick it on load. -->
+        <div class="chk"><input type="checkbox" id="do_verify">
+          <span>Run the invariant gate on the finished sheet</span></div>
+        <div class="grid2">
+          <div><label>Opaque threshold <span class="muted" id="leak_alpha_v">200</span></label>
+               <input type="range" id="leak_alpha" min="1" max="255" value="200"></div>
+          <div><label>Bright threshold <span class="muted" id="bright_v">64</span></label>
+               <input type="range" id="bright" min="1" max="255" value="64"></div>
+        </div>
+        <label>Max hole before failing <span class="muted" id="erode_max_v">24</span> px</label>
+        <input type="range" id="erode_max" min="1" max="400" value="24">
+        <div class="hint">Checks straight alpha, no opaque reachable-black backdrop,
+          a full grid, and that no bright subject pixel lost its alpha. The hole
+          tolerance exists because a matting model always drops a few edge pixels:
+          a 1-px seam of ~15 px is invisible, a 24-px hole is not. The raw counts are
+          reported either way, so nothing is hidden.</div>
+      </div>
+    </details>
+  </div>
+
+  <!-- --------------------------------------------------------------- right -->
+  <div>
+    <div class="panel">
+      <summary style="list-style:none;padding:10px 14px;font-weight:600;font-size:13px">
+        Run
+      </summary>
+      <div class="body">
+        <div class="row">
+          <button class="primary" id="go">Build sprite sheet</button>
+          <button id="cancel" disabled>Cancel</button>
+          <span id="status" class="badge mut">idle</span>
+        </div>
+        <div class="bar"><i id="bar"></i></div>
+        <div class="stage"><span id="stage">—</span><span id="pct"></span></div>
+        <pre class="log" id="log">ready.</pre>
+      </div>
+    </div>
+
+    <div class="panel" id="resultpanel" style="display:none">
+      <summary style="list-style:none;padding:10px 14px;font-weight:600;font-size:13px">
+        Result
+      </summary>
+      <div class="body" id="result"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+
+// ---------------------------------------------------------------- theme
+// The attribute carries the state; the CSS and the pre-paint script in <head>
+// are the only things that read it. The button writes it and remembers it, and
+// its label names the theme it switches TO, so "Dark" on a light page cannot be
+// read as a status of the page you are looking at.
+function setTheme(t){
+  document.documentElement.dataset.theme = t;
+  try { localStorage.setItem("sprite.theme", t); } catch(e){ /* private mode */ }
+  const b = $("theme");
+  b.textContent = t === "dark" ? "Light" : "Dark";
+  b.title = t === "dark" ? "switch to the light theme"
+                          : "switch to the dark theme";
+}
+$("theme").onclick = () => setTheme(
+  document.documentElement.dataset.theme === "dark" ? "light" : "dark");
+setTheme(document.documentElement.dataset.theme || "light");
+
+const FIELDS = ["video","model_dir","infer_size","start","end","frame_step","black_max",
+  "cell_mode","cell_w","cell_h","pad","square_cell","columns","max_texture","fps",
+  "play_mode","trim_to","anchor","blend","gif_scale","gif_bg","leak_alpha","bright",
+  "erode_max","do_matte","do_repair","repair_border_only","do_key","key_color","key_tol",
+  "key_also_connected",
+  "want_sheet","want_sidecar","want_preview",
+  "want_gif","want_frames","do_verify"];
+
+function collect(){
+  const cfg = {};
+  for (const f of FIELDS){
+    const el = $(f);
+    if (!el) continue;
+    if (el.type === "checkbox") cfg[f] = el.checked;
+    // NOTE: <input type="range"> must be coerced too. It used to fall through to
+    // the string branch, so black_max/pad/leak_alpha/bright/erode_max/gif_scale
+    // all went to the server as strings and blew up inside numpy.
+    else if (el.type === "number" || el.type === "range") cfg[f] = Number(el.value);
+    else cfg[f] = el.value;                 // text inputs, selects
+  }
+  // selects that carry numbers
+  cfg.columns = Number($("columns").value);
+  cfg.infer_size = Number($("infer_size").value);
+  cfg.max_texture = Number($("max_texture").value);
+  cfg.square_cell = $("square_cell").checked;
+  return cfg;
+}
+
+function bindLive(){    for (const [id,suf] of [["black_max",""],["pad",""],["max_texture",""],
+                          ["gif_scale",""],["leak_alpha",""],["bright",""],
+                          ["erode_max",""],["key_tol",""]]){
+    const el = $(id), out = $(id+"_v");
+    if (!el || !out) continue;
+    const upd = () => out.textContent = el.value;
+    el.addEventListener("input", upd); upd();
+  }
+}
+bindLive();
+
+// ---- env + defaults
+let DEFAULTS = {}, RUNS_DIR = "";
+fetch("/api/defaults").then(r=>r.json()).then(d=>{
+  DEFAULTS = d.defaults;
+  RUNS_DIR = d.env.runs_dir || "";
+  $("env").textContent = "python " + d.env.python +
+    (d.env.cuda ? "  ·  " + d.env.cuda : "  ·  no CUDA") +
+    "  ·  runs: " + d.env.runs_dir;
+  for (const f of FIELDS){
+    const el = $(f); if (!el || !(f in d.defaults)) continue;
+    if (el.type === "checkbox") el.checked = !!d.defaults[f];
+    else el.value = d.defaults[f];
+  }
+  bindLive();
+});
+function editLink(rel){
+  // Forward slashes only, always. This string is handed to the server, which
+  // runs os.path.exists() on it: Windows accepts "/" as a separator, but Linux
+  // treats "\" as an ordinary filename character. So a backslash join resolves
+  // on the Windows host and 404s with "no such sheet" in the container -- while
+  // /files/<rel> keeps rendering the PNG, which is what makes it look like the
+  // sheet is there. RUNS_DIR arrives from the host and may be Windows-shaped,
+  // so normalise it as well.
+  const join = s => String(s).replace(/\\/g, "/");
+  const abs = RUNS_DIR ? (join(RUNS_DIR) + "/" + join(rel)) : join(rel);
+  return "/editor?sheet=" + encodeURIComponent(abs);
+}
+
+// ---- video info
+// The dropped/typed clip is previewed as something you can actually play. A
+// still of frame 1 cannot show a loop, a hitch or a bad cut -- which is exactly
+// what you are checking before spending minutes on a matte run -- so the still
+// is only the poster (and the fallback for a codec this browser will not
+// decode: the server reads codecs the <video> element does not).
+function showInfo(info, preview, divs, video, backdrop, inferSize){
+  const fmt = n => (n||0).toLocaleString();
+  let h = '<div class="kv">'
+    + '<b>frames</b><span>' + fmt(info.frames) + '</span>'
+    + '<b>fps</b><span>' + info.fps + '</span>'
+    + '<b>size</b><span>' + info.width + ' &times; ' + info.height + '</span>'
+    + '<b>duration</b><span>' + (info.duration ?? '?') + ' s</span>'
+    + (backdrop ? '<b>backdrop</b><span>' + backdrop + '</span>' : '')
+    + (inferSize ? '<b>inference</b><span>' + inferSize
+        + ' &mdash; picked for this clip</span>' : '')
+    + '</div>';
+  if (divs && divs.length) h += '<div class="hint">valid column counts (full grid): '
+    + divs.join(", ") + '</div>';
+  if (video){
+    // muted + loop: this is a loop-cycle preview, and a muted element is the one
+    // that is allowed to start without a click. Poster is frame 1.
+    h += '<div class="vpreview"><video id="vplay" controls muted loop playsinline'
+      + ' preload="metadata"' + (preview ? ' poster="' + preview + '"' : '')
+      + ' src="' + video + '"></video>'
+      + '<div class="hint cap" id="vplaynote">playable preview of the source clip'
+      + '</div></div>';
+  } else if (preview){
+    h += '<div class="vpreview"><img src="' + preview + '"></div>';
+  }
+  $("vinfo").innerHTML = h;
+  // Seed the colour key with the clip's own border colour. The backdrop the
+  // matte had to remove is exactly what the key has to match, and nobody can
+  // name their green screen's RGB by eye -- theirs is #13ff38, not #00ff00.
+  // A suggestion only: the box is still off, and every field can be overridden.
+  const kc = $("key_color");
+  if (backdrop && kc) kc.value = backdrop;
+  // Seed the inference size from the clip's own resolution, so a 640px sprite
+  // clip is not matted at the trained 1024 by default. Same contract as the
+  // colour key above: applied when the clip is read, and the picker stays the
+  // user's to change afterwards.
+  const isz = $("infer_size");
+  if (inferSize && isz) isz.value = String(inferSize);
+  const vp = $("vplay");
+  if (vp) vp.addEventListener("error", () => {
+    // Unsupported codec, or the file went away between reading it and playing
+    // it. Say so and show the still rather than leaving a black rectangle.
+    const note = $("vplaynote");
+    const why = vp.error ? " (media error " + vp.error.code + ")" : "";
+    if (note) note.innerHTML = '<span class="err">this browser cannot play this '
+      + 'clip' + why + ' &mdash; showing frame 1 instead</span>';
+    if (preview) vp.outerHTML = '<img src="' + preview + '">';
+  });
+  if (divs && divs.length){
+    const sel = $("columns");
+    const cur = sel.value;
+    sel.innerHTML = '<option value="0">auto</option>' +
+      divs.filter(d=>d>1).map(d=>'<option value="'+d+'">'+d+' ('+(info.frames/d)+' rows)</option>').join("");
+    sel.value = cur && divs.includes(Number(cur)) ? cur : "0";
+  }
+}
+
+$("probe").onclick = async () => {
+  const v = $("video").value.trim();
+  if (!v) return;
+  $("vinfo").innerHTML = '<div class="hint">reading&hellip;</div>';
+  const r = await fetch("/api/probe", {method:"POST",
+    headers:{"Content-Type":"application/json"}, body: JSON.stringify({video:v})});
+  const d = await r.json();
+  if (!d.ok){ $("vinfo").innerHTML = '<div class="err">'+d.error+'</div>'; return; }
+  showInfo(d.info, d.preview, d.divisors, d.video, d.backdrop, d.infer_size);
+  if (DEFAULTS.fps) $("fps").value = Math.round(d.info.fps) || 24;
+};
+
+// ---- browse: the native OS picker, uploading like a drop
+// Browse opens the system file picker and the chosen clip uploads exactly as
+// if dropped on the zone below -- one picker shared by both, so the two ways
+// in cannot drift apart.
+function pickNative(){
+  const inp = document.createElement("input");
+  inp.type = "file"; inp.accept = "video/*,.mp4,.mov,.mkv,.webm,.gif";
+  inp.onchange = () => inp.files[0] && uploadFile(inp.files[0]);
+  inp.click();
+}
+$("browse").onclick = pickNative;
+
+// ---- upload (raw body, no multipart dependency)
+const drop = $("drop");
+["dragenter","dragover"].forEach(e => drop.addEventListener(e, ev => {
+  ev.preventDefault(); drop.classList.add("hot"); }));
+["dragleave","drop"].forEach(e => drop.addEventListener(e, ev => {
+  ev.preventDefault(); drop.classList.remove("hot"); }));
+drop.addEventListener("drop", ev => {
+  const f = ev.dataTransfer.files[0];
+  if (f) uploadFile(f);
+});
+drop.addEventListener("click", pickNative);
+async function uploadFile(f){
+  drop.textContent = "uploading " + f.name + " (" + (f.size/1048576).toFixed(1) + " MB)…";
+  const r = await fetch("/api/upload?name=" + encodeURIComponent(f.name),
+                        {method:"POST", body: f});
+  const d = await r.json();
+  if (!d.ok){ drop.textContent = "upload failed"; return; }
+  drop.textContent = "uploaded " + f.name + " — click to replace";
+  $("video").value = d.path;
+  $("probe").click();
+}
+
+// ---- run
+let JOB = null, POLL = null;
+$("go").onclick = async () => {
+  const cfg = collect();
+  if (!cfg.video){ alert("Pick a video first."); return; }
+  $("resultpanel").style.display = "none";
+  $("log").textContent = "";
+  setStatus("queued","mut");
+  $("go").disabled = true; $("cancel").disabled = false;
+  const r = await fetch("/api/run", {method:"POST",
+    headers:{"Content-Type":"application/json"}, body: JSON.stringify(cfg)});
+  const d = await r.json();
+  if (!d.ok){ setStatus("error","bad"); $("log").textContent = d.error;
+    $("go").disabled = false; $("cancel").disabled = true; return; }
+  JOB = d.id;
+  POLL = setInterval(poll, 400);
+};
+$("cancel").onclick = async () => {
+  if (!JOB) return;
+  await fetch("/api/job/" + JOB + "/cancel", {method:"POST"});
+  setStatus("cancelling","warn");
+};
+
+function setStatus(t, cls){ const s=$("status"); s.textContent=t; s.className="badge "+(cls||"mut"); }
+
+async function poll(){
+  if (!JOB) return;
+  const r = await fetch("/api/job/" + JOB);
+  const d = await r.json();
+  if (!d.ok) return;
+  const j = d.job;
+  $("bar").style.width = Math.round((j.frac||0)*100) + "%";
+  $("stage").textContent = j.stage;
+  $("pct").textContent = Math.round((j.frac||0)*100) + "%";
+  $("log").textContent = (j.log||[]).join("\n");
+  $("log").scrollTop = $("log").scrollHeight;
+  if (j.status === "running" || j.status === "queued"){
+    setStatus(j.status, j.status==="running"?"warn":"mut");
+  } else {
+    clearInterval(POLL); POLL = null;
+    $("go").disabled = false; $("cancel").disabled = true;
+    if (j.status === "done"){ setStatus("done","ok"); render(j.result); }
+    else if (j.status === "cancelled"){ setStatus("cancelled","warn"); }
+    else { setStatus("error","bad"); renderError(j); }
+  }
+}
+
+function renderError(j){
+  $("resultpanel").style.display = "";
+  $("result").innerHTML = '<div class="err">' + (j.error||"unknown error") + '</div>';
+}
+
+function fmtBytes(n){ return n > 1048576 ? (n/1048576).toFixed(1)+" MB" : Math.round(n/1024)+" KB"; }
+
+function render(res){
+  $("resultpanel").style.display = "";
+  const L = res.layout, A = res.artifacts || {}, V = res.verify || {};
+  let h = "";
+
+  const vb = V.ok === true ? '<span class="badge ok">verification PASSED</span>'
+           : V.ok === false ? '<span class="badge bad">verification FAILED</span>'
+           : '<span class="badge mut">not verified</span>';
+  h += '<div class="row">' + vb
+     + '<span class="badge mut">' + res.frames + ' frames</span>'
+     + '<span class="badge mut">' + L.columns + '&times;' + L.rows + ' grid</span>'
+     + '<span class="badge mut">' + L.cell_w + '&times;' + L.cell_h + ' cells</span>'
+     + '<span class="badge mut">sheet ' + L.sheet_w + '&times;' + L.sheet_h + '</span>'
+     + '</div>';
+
+  h += '<div class="kv">'
+     + '<b>crop window</b><span>[' + L.crop.join(", ") + ']</span>'
+     + '<b>subject bbox</b><span>[' + res.bbox.join(", ") + ']</span>'
+     + '<b>source</b><span>' + res.info.width + '&times;' + res.info.height
+     + ' @ ' + res.info.fps + ' fps</span>'
+     + '</div>';
+
+  if (L.warnings && L.warnings.length)
+    h += '<div class="warnbox">' + L.warnings.map(esc).join("<br>") + '</div>';
+
+  if (V.lines && V.lines.length)
+    h += '<pre class="log" style="max-height:200px">' + esc(V.lines.join("\n")) + '</pre>';
+
+  const arts = [];
+  if (A.sheet)   arts.push(["Sheet PNG", A.sheet]);
+  if (A.sidecar) arts.push(["Sidecar JSON", A.sidecar]);
+  if (A.preview) arts.push(["Preview player", A.preview]);
+  if (A.gif)     arts.push(["GIF", A.gif]);
+  if (arts.length){
+    h += '<div class="arts">' + arts.map(([n,p]) =>
+      '<a href="/files/' + p + '" target="_blank">' + n + '</a>').join("") + '</div>';
+  }
+  if (A.sheet){
+    h += '<div class="arts"><a href="' + editLink(A.sheet) +
+         '" style="border-color:var(--acc);color:var(--acc)">Edit this sheet &rarr;</a></div>';
+  }
+
+  if (A.sheet){
+    h += '<div class="sheetwrap"><img src="/files/' + A.sheet +
+         '" style="max-width:' + Math.min(100, Math.max(20, 1600/L.columns)) + '%"></div>';
+    h += '<div class="hint">Full sheet is ' + L.sheet_w + '&times;' + L.sheet_h +
+         ' px. Scroll to pan; open the PNG for 1:1.</div>';
+  }
+  if (A.preview) h += '<iframe class="pv" src="/files/' + A.preview + '"></iframe>';
+
+  $("result").innerHTML = h;
+}
+function esc(s){ return String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+
+// The "Previous runs" panel (and its loadRuns() fetcher) was removed on request
+// 2026-09-25. The route behind it, GET /api/runs, is deliberately still in app.py
+// -- it costs nothing idle and is what a "previous runs" list would re-attach to.
+
+// ---------------------------------------------------------------- update
+// Pulls the latest source out of this app's own repository, then restarts the
+// server so the new Python is actually loaded. The token is asked for per
+// update rather than configured: the build's GITHUB_TOKEN is a secret mount and
+// is deliberately absent from the image, and a PAT baked into an image is a PAT
+// that anyone who pulls the image can read.
+const UPD_TOKEN_KEY = "sprite.gh_token";
+function updMsg(html){ $("updmsg").innerHTML = html; }
+
+function updOpen(){
+  $("updtok").value = "";
+  $("updsave").checked = false;
+  try {
+    const saved = localStorage.getItem(UPD_TOKEN_KEY);
+    if (saved){ $("updtok").value = saved; $("updsave").checked = true; }
+  } catch(e){ /* private mode */ }
+  updMsg("");
+  $("updgo").disabled = false;
+  $("updrev").textContent = "checking the installed revision…";
+  fetch("/api/update").then(r=>r.json()).then(d=>{
+    $("updrev").textContent = d.rev
+      ? "installed " + d.short + (d.subject ? " — " + d.subject : "")
+      : "installed revision unknown (this image carries no .sprite_rev)";
+  }).catch(()=>{ $("updrev").textContent = ""; });
+  $("updwrap").hidden = false;
+  $("updtok").focus();
+}
+function updClose(){ $("updwrap").hidden = true; }
+
+// Wait until the NEW revision is the one answering. Waiting for "any response"
+// is not enough: the re-exec is delayed so the update's own response can flush,
+// so for the first second or so the OLD process still answers, and a naive
+// readiness check would reload straight back into the old code.
+async function updWaitForRev(rev){
+  for (let i = 0; i < 120; i++){
+    await new Promise(r => setTimeout(r, 500));
+    try {
+      const r = await fetch("/api/update", {cache:"no-store"});
+      if (!r.ok) continue;
+      const d = await r.json();
+      if (d.rev === rev) return true;
+    } catch(e){ /* still down */ }
+  }
+  return false;
+}
+
+async function updGo(){
+  const token = $("updtok").value.trim();
+  if (!token){ updMsg('<div class="err">Enter a GitHub token.</div>'); return; }
+  try {
+    if ($("updsave").checked) localStorage.setItem(UPD_TOKEN_KEY, token);
+    else localStorage.removeItem(UPD_TOKEN_KEY);
+  } catch(e){ /* private mode */ }
+
+  $("updgo").disabled = true;
+  updMsg('<div class="hint">Fetching the latest source…</div>');
+  let d;
+  try {
+    const r = await fetch("/api/update", {method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({token: token})});
+    // Read the body as text and parse it here, rather than calling r.json().
+    // A failure that happens before the handler runs answers with a bare
+    // text/plain "Internal Server Error", and r.json() then throws
+    //   SyntaxError: Unexpected token 'I', "Internal S"... is not valid JSON
+    // -- which shows the user a parser complaint instead of the actual cause.
+    const raw = await r.text();
+    try {
+      d = JSON.parse(raw);
+    } catch(e){
+      d = {ok: false, error: "HTTP " + r.status + " from the server: "
+                             + raw.slice(0, 400)};
+    }
+  } catch(e){
+    updMsg('<div class="err">' + esc(String(e)) + '</div>');
+    $("updgo").disabled = false; return;
+  }
+  if (!d.ok){
+    updMsg('<div class="err">' + esc(d.error || "update failed") + '</div>');
+    $("updgo").disabled = false; return;
+  }
+  if (!d.updated){
+    updMsg('<div class="okbox">Already up to date at ' + esc(d.rev.slice(0,10)) + '.</div>');
+    $("updgo").disabled = false; return;
+  }
+  updMsg('<div class="hint">Updated to ' + esc(d.rev.slice(0,10)) + ' (' + d.files +
+         ' files). Restarting…</div>');
+  if (!await updWaitForRev(d.rev)){
+    updMsg('<div class="err">The server did not come back on the new revision.\n' +
+           'Check it with:  docker logs sprite-studio</div>');
+    $("updgo").disabled = false; return;
+  }
+  location.reload();
+}
+
+// The dialog markup is the last thing in <body>, i.e. AFTER this script -- an
+// overlay belongs last so it never sits in the layout flow. Inline scripts run
+// during parsing, though, so every $("upd...") lookup here returns null: the
+// first assignment (the header button) succeeds, the second throws a TypeError,
+// and the rest of this block never runs. The symptom is a Cancel button that
+// does nothing and a dialog that will not open -- with nothing in the console
+// pointing at the cause unless you know to look. So the wiring waits for the DOM.
+function updWire(){
+  $("upd").onclick = updOpen;
+  $("updcancel").onclick = updClose;
+  $("updgo").onclick = updGo;
+  // Backdrop click, or Escape, dismisses.
+  $("updwrap").onclick = e => { if (e.target === $("updwrap")) updClose(); };
+  document.addEventListener("keydown", e => {
+    if (e.key === "Escape" && !$("updwrap").hidden) updClose();
+  });
+}
+if (document.readyState === "loading")
+  document.addEventListener("DOMContentLoaded", updWire);
+else
+  updWire();          // script deferred or already parsed
+</script>
+
+<!-- Update dialog. The token field is the only input: the repository is private
+     and the build-time token is a secret mount that is deliberately not in the
+     image, so there is nothing here to pre-fill it from. -->
+<div id="updwrap" class="ovl" hidden>
+  <div class="dlg" role="dialog" aria-modal="true" aria-labelledby="updh">
+    <h3 id="updh">Update studio</h3>
+    <div class="hint" id="updrev"></div>
+    <label for="updtok">GitHub token</label>
+    <input type="password" id="updtok" autocomplete="off" spellcheck="false"
+           placeholder="ghp_&hellip; or github_pat_&hellip;">
+    <div class="hint">Needs read access to the source repository. Sent once to
+      this server, used for the fetch, and never written to disk.</div>
+    <label class="chk"><input type="checkbox" id="updsave">
+      Remember it in this browser</label>
+    <div id="updmsg"></div>
+    <div class="row">
+      <button id="updcancel">Cancel</button>
+      <button class="primary" id="updgo">Update &amp; restart</button>
+    </div>
+  </div>
+</div>
+</body>
+</html>

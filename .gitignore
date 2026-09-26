@@ -1,0 +1,94 @@
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# virtualenvs -- this app runs on the system Python that has torch, so a local
+# venv is optional. Ignore it if you make one.
+.venv/
+venv/
+env/
+ENV/
+
+# test / lint caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# ---------------------------------------------------------------------------
+# Sprite Studio generated output
+# ---------------------------------------------------------------------------
+# Every run writes a full sheet (tens of MB), the matted frames, a preview page
+# and a GIF into runs/<date-time>_<name>/. All of it is reproducible from the
+# source video, so none of it belongs in version control.
+# app.py recreates both directories on startup, so ignoring them wholesale is safe.
+runs/
+uploads/
+
+# The editor's per-cell PNG cache: one small PNG per frame, rewritten whenever a
+# cell changes. Rebuilt from the sheet on demand, so it is never source. app.py
+# already skips this directory when it scans for assets.
+_cells/
+
+# One-off probes, fixtures and screenshot evidence written while diagnosing.
+# Leading underscore = throwaway; regenerate rather than store. No tracked .py
+# here starts with an underscore -- the suites are test_*.py, smoke_*.py and
+# *_drive.py -- so _*.py is safe to ignore alongside the artefacts.
+_*.png
+_*.json
+_*.py
+
+# ---------------------------------------------------------------------------
+# self-update state
+# ---------------------------------------------------------------------------
+# Both are written at RUNTIME by the studio's Update button (POST /api/update)
+# and describe the checkout they sit in, not the source:
+#
+#   .sprite_rev      the commit the running tree came from; the dialog prints it
+#                    as "installed <short sha>", and the update compares it
+#                    against upstream HEAD to decide whether anything changed.
+#   .update_backup/  the previous tree, kept so a bad update can be undone.
+#
+# Committing either would be actively wrong: every clone would claim to be at
+# whatever commit was pushed last, and `.update_backup/` would put a stale copy
+# of the entire app into version control. The Dockerfile writes `.sprite_rev`
+# into the image at build time -- it is a runtime artefact, not source.
+.sprite_rev
+.update_backup/
+
+# ---------------------------------------------------------------------------
+# editor / OS
+# ---------------------------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+desktop.ini
+.freebuff/project-id
+
+# ---------------------------------------------------------------------------
+# secrets / credentials
+# ---------------------------------------------------------------------------
+# `.env` holds HF_TOKEN and GITHUB_TOKEN, which the Docker build consumes via
+# `--secret id=...,env=...`. Both are read-only tokens, but they still unlock a
+# private repo and a gated model -- never commit them.
+#
+# Note `.env` is a FILE. The `env/` and `ENV/` entries above are virtualenv
+# DIRECTORY patterns and do not match it, which is why this entry exists.
+.env
+.env.*
+# ...but a committed template is the whole point of the pattern above.
+!.env.example
