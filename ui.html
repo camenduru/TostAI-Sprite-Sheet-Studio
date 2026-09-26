@@ -714,18 +714,10 @@ function esc(s){ return String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;
 
 // ---------------------------------------------------------------- update
 // Pulls the latest source out of this app's own public repository, then
-// restarts the server so the new Python is actually loaded. No token needed;
-// the field below is optional and only raises GitHub's API rate limit.
-const UPD_TOKEN_KEY = "sprite.gh_token";
+// restarts the server so the new Python is actually loaded.
 function updMsg(html){ $("updmsg").innerHTML = html; }
 
 function updOpen(){
-  $("updtok").value = "";
-  $("updsave").checked = false;
-  try {
-    const saved = localStorage.getItem(UPD_TOKEN_KEY);
-    if (saved){ $("updtok").value = saved; $("updsave").checked = true; }
-  } catch(e){ /* private mode */ }
   updMsg("");
   $("updgo").disabled = false;
   $("updrev").textContent = "checking the installed revision…";
@@ -735,7 +727,6 @@ function updOpen(){
       : "installed revision unknown (this image carries no .sprite_rev)";
   }).catch(()=>{ $("updrev").textContent = ""; });
   $("updwrap").hidden = false;
-  $("updtok").focus();
 }
 function updClose(){ $("updwrap").hidden = true; }
 
@@ -757,20 +748,13 @@ async function updWaitForRev(rev){
 }
 
 async function updGo(){
-  const token = $("updtok").value.trim();
-  // Token is optional now (public repo). Still honours the remember box.
-  try {
-    if ($("updsave").checked) localStorage.setItem(UPD_TOKEN_KEY, token);
-    else localStorage.removeItem(UPD_TOKEN_KEY);
-  } catch(e){ /* private mode */ }
-
   $("updgo").disabled = true;
   updMsg('<div class="hint">Fetching the latest source…</div>');
   let d;
   try {
     const r = await fetch("/api/update", {method:"POST",
       headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({token: token})});
+      body: JSON.stringify({})});
     // Read the body as text and parse it here, rather than calling r.json().
     // A failure that happens before the handler runs answers with a bare
     // text/plain "Internal Server Error", and r.json() then throws
@@ -828,20 +812,11 @@ else
   updWire();          // script deferred or already parsed
 </script>
 
-<!-- Update dialog. The repo is public so no token is needed; the optional
-     field below only raises GitHub's rate limit. -->
+<!-- Update dialog. The repo is public so the update needs nothing typed in. -->
 <div id="updwrap" class="ovl" hidden>
   <div class="dlg" role="dialog" aria-modal="true" aria-labelledby="updh">
     <h3 id="updh">Update studio</h3>
     <div class="hint" id="updrev"></div>
-    <label for="updtok">GitHub token (optional)</label>
-    <input type="password" id="updtok" autocomplete="off" spellcheck="false"
-           placeholder="leave empty — only needed for rate limits">
-    <div class="hint">Public repo: update works with no token. A token only
-      raises the API limit. Sent once to this server, used for the fetch,
-      and never written to disk.</div>
-    <label class="chk"><input type="checkbox" id="updsave">
-      Remember it in this browser</label>
     <div id="updmsg"></div>
     <div class="row">
       <button id="updcancel">Cancel</button>

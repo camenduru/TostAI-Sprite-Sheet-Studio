@@ -1164,10 +1164,8 @@ def editor_close(did: str):
 # self-update -- pull the latest source from this app's own repo, then restart
 # --------------------------------------------------------------------------- #
 #
-# Why a token field still exists: the repo is public now, so an update works
-# with no token at all (unauthenticated GitHub API, 60 req/h). A token is only
-# an option for a higher rate limit -- typed in per-update, kept in memory for
-# one request, never baked into the image and never written to disk.
+# The repo is public, so the update needs no token and asks for none: plain
+# unauthenticated GitHub API (60 req/h, and an update is one request).
 #
 # Why the files are copied over the live tree rather than the container being
 # rebuilt: this is a dev convenience -- click, get latest, keep working. It is
@@ -1194,27 +1192,19 @@ _UA = {"User-Agent": "sprite-studio-update",
        "Accept": "application/vnd.github+json"}
 
 
-def _gh_json(url, token=""):
-    """GET a GitHub API URL. Returns (data, None) or (None, human_error).
-
-    `token` is optional: the repo is public, so unauthenticated works up to
-    GitHub's rate limit. When given it is sent as a Bearer header."""
-    headers = dict(_UA)
-    if token:
-        headers["Authorization"] = "Bearer " + token
-    req = urllib.request.Request(url, headers=headers)
+def _gh_json(url):
+    """GET a GitHub API URL. Returns (data, None) or (None, human_error)."""
+    req = urllib.request.Request(url, headers=dict(_UA))
     try:
         with urllib.request.urlopen(req, timeout=30) as r:
             return json.loads(r.read().decode("utf-8")), None
     except urllib.error.HTTPError as e:
-        if e.code == 401:
-            return None, ("GitHub rejected the token (401). It may have expired.")
         if e.code == 404:
             return None, ("GitHub returned 404 for %s. The repository name "
                           "is wrong or the repo is gone." % url)
         if e.code == 403:
             return None, ("GitHub returned 403 (rate limit or blocked). "
-                          "Wait a while, or paste a token to raise the limit.")
+                          "Wait a while and try again.")
         return None, "GitHub returned HTTP %d." % e.code
     except Exception as ex:                                     # noqa: BLE001
         return None, "%s: %s" % (type(ex).__name__, ex)
@@ -1286,16 +1276,13 @@ def update_status():
 
 
 @app.post("/api/update")
-async def update_apply(req: Request):
+async def update_apply():
     global _rev_subject
-    body = await req.json() or {}
-    # Optional: public repo updates work without one; a token only raises the
-    # GitHub API rate limit (60 req/h unauthenticated).
-    token = (body.get("token") or "").strip()
+    # No body needed: the repo is public, so there is nothing to send.
 
     # 1. What is upstream right now?
     commits, err = _gh_json(
-        "https://api.github.com/repos/%s/commits?per_page=1" % APP_REPO, token)
+        "https://api.github.com/repos/%s/commits?per_page=1" % APP_REPO)
     if err:
         return JSONResponse({"ok": False, "error": err}, status_code=400)
     if not commits:
@@ -1315,12 +1302,9 @@ async def update_apply(req: Request):
         # 2. Fetch that exact tree. The API redirects to codeload with a signed
         #    token in the URL, so the redirect is followed without the header.
         tarball = os.path.join(tmp, "src.tar.gz")
-        dl_headers = dict(_UA)
-        if token:
-            dl_headers["Authorization"] = "Bearer " + token
         dl = urllib.request.Request(
             "https://api.github.com/repos/%s/tarball/%s" % (APP_REPO, latest),
-            headers=dl_headers)
+            headers=dict(_UA))
         try:
             with urllib.request.urlopen(dl, timeout=180) as r, \
                     open(tarball, "wb") as f:
