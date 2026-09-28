@@ -54,7 +54,7 @@ The image is self-contained: it carries the model and the three pixel ops.
     docker run -d --name tostai-sprite-sheet-studio --gpus all -p 8765:8765 --restart unless-stopped camenduru/tostai-sprite-sheet-studio
     ```
 
-    *Requires NVIDIA GPU (Min 24GB VRAM)*
+    *Requires NVIDIA GPU (Min 4GB VRAM)*
 
 4.  **Open app**\
     Go to: http://localhost:8765 (generator) or http://localhost:8765/editor (editor)
