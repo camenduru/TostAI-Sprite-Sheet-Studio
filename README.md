@@ -108,15 +108,35 @@ model.
      beside the source, whose brightness *is* the alpha: **white keeps the source
      pixel, black makes it transparent, grey keeps the edge soft.** That is the
      convention every roto tool and every "alpha matte" export already uses.
-     Tick *Use a mask video instead of the model* and the path becomes the whole
-     of the background removal — **VRMBG-3.0 is not run at all**, nothing loads
-     on the GPU, and the sheet is exactly as good as the mask. That trade is the
-     point (the usual reason to hand over a mask is that the model got a clip
-     wrong), and it is why the path is behind its own checkbox: a path left in
-     the box from an earlier experiment cannot silently keep the model from
-     running, because `collect()` sends `""` whenever the box is unticked.
-     Dropping a mask on its zone ticks the box for you — that is an unambiguous
-     statement of intent, so it is not left inert.
+     Select *Use a mask video instead of the model* and the path becomes the
+     whole of the background removal — **VRMBG-3.0 is not run at all**, nothing
+     loads on the GPU, and the sheet is exactly as good as the mask. That trade
+     is the point (the usual reason to hand over a mask is that the model got a
+     clip wrong), and it is why the path is behind its own radio in the
+     background-removal group: a path left in the box from an earlier experiment
+     cannot silently keep the model from running, because `collect()` sends `""`
+     whenever the mask radio is not the selected one. Dropping a mask on its
+     zone selects that radio for you — that is an unambiguous statement of
+     intent, so it is not left inert.
+
+     **The two paths are one choice, not two switches.** They are alternatives —
+     the mask replaces the model rather than refining it — so the page presents
+     them as a radio group: *Remove background with VRMBG-3.0* / *Use a mask video
+     instead of the model* / *Neither — keep the video's own alpha*. Radios make
+     "both" unreachable, which is the point: as a pair of checkboxes it was
+     reachable, and harmless but silent. `run_pipeline` branches on the mask
+     first, so with both ticked the VRMBG path is never reached, no model is
+     constructed, nothing loads on the GPU, and the frames come out
+     **byte-identical** (same SHA-256 over every frame) to the mask-only run with
+     an empty `model_cache` staying empty. The pipeline keeps that precedence as a
+     fallback for a hand-rolled client — `test_mask_video.py` pins it — but the
+     page no longer offers the state.
+
+     Only the chosen path's own settings stay live: *Model folder* and *Inference
+     size* grey when VRMBG is not selected, and the whole mask block greys when
+     the mask is not. *Frame step* / *Start* / *End* stay live throughout, because
+     they are the **range** and every path reads them. Greyed rather than cleared,
+     so switching paths back and forth is not a lossy operation.
 
      The mask lands in `uploads/masks/`, not `uploads/`. A mask exported beside
      its source is very often named the same as it, and both used to go to the
@@ -124,16 +144,113 @@ model.
      the run then read a mask as its own video.
 
      *Start* / *End* / *Frame step* apply to the mask too — the two clips are read
-     in lockstep, which is what keeps the alpha on the right pose. Two things it
-     refuses to do quietly:
+     in lockstep, which is what keeps the alpha on the right pose.
 
-     - **A mask that runs out.** `zip` would stop at the shorter clip and hand
-       back fewer frames than were asked for; the frame count is what the grid is
-       built from, so that failure would surface as a wrong *layout*, not as a
-       short mask. It is an error, and it names the fix. Measured on the
-       `test_mask` pair (`video.mp4` 124 frames, `mask.mp4` 121), the full range
-       gives: *"the mask video ran out at source frame 122 of 124 … It covers up
-       to frame 121, so **End=121** lines the two up."*
+     - **Auto: the run finds the fit instead of being told it.** Tick *Auto* and
+       the two skip boxes below it are disabled, because it owns the offset.
+       Nothing in either file states where a mask begins — a roto tool does not
+       record which frames it was handed — so the offset is **measured**: the
+       mask's silhouette is slid along the clip one frame at a time and scored by
+       mean IoU against the source's foreground, and the lag that sits on the
+       subject wins. On a fixture whose subject walks across the frame, with the
+       mask taken from frames 6..10 of a 10-frame clip, the profile runs
+       `0.00 / 0.00 / 0.00 / 0.04 / 0.31 / 1.00` — the right answer by a mile.
+
+       Two other statistics were tried first and each failed on a case that
+       matters, which is why this one is what shipped.
+
+       A **centroid correlation** fails on linear motion, and linear motion is
+       the common case — a character walking. Pearson is invariant to adding a
+       constant, and shifting a straight-line trajectory in time *is* adding a
+       constant, so every lag scores 1.00 and the fit is a coin-flip that always
+       lands on start-aligned. The first fixture written for this test — a
+       subject marching in a straight line — is the one that caught it. Overlap
+       is not offset-invariant, so it sees the difference.
+
+       A **fixed distance threshold** instead of an adaptive one fails on the
+       soft edge: at 40 levels the codec's edge and the subject's shadow join the
+       foreground, the silhouette swells to nearly the whole frame, and every lag
+       overlaps every other one perfectly. Hence Otsu, which asks each frame
+       where its own backdrop/subject split is — on the `test_mask` clip it lands
+       at 76–87 unaided.
+
+       The source's foreground is a **proxy**, not a matte: everything far enough
+       from the frame's own border colour counts as subject. The border colour is
+       read **per frame**, and that is not incidental. Reading it once from the
+       range's first frame was the first version, and it broke on the very pair
+       this was built for: `video.mp4` opens on a magenta title card (border
+       `[197, 41, 156]`) and cuts to a grey set (`[195, 196, 196]`) by frame 10.
+       Against a magenta border every grey pixel is "far from the backdrop", the
+       silhouette filled the frame, and every lag overlapped every other one — a
+       confident answer with no information in it. A per-frame median follows a
+       fade or a cut for free.
+
+       On the real pair (`video.mp4` 124, `mask2.mp4` 121) auto returns **skip
+       0/3** — start-aligned — with the log reading `overlap 0.87, against 0.85
+       at the best other offset (1 frame over)`. That is the documented
+       start-aligned assumption *confirmed by measurement* rather than assumed,
+       and the profile is monotone: 0.869 / 0.848 / 0.818 / 0.789 across the four
+       lags. Note that the gradient is carried by **pose**, not position: the
+       subject moves about 4 px over the whole clip, so a three-frame shift is
+       sub-pixel — what changes is which frame of the animation the silhouette
+       matches.
+
+       **When the clips do not determine the fit, auto says so.** A subject that
+       never moves leaves every lag overlapping every other one *because it is
+       true* — the information is not in the files. That is detected (the whole
+       profile varying by less than `_AUTO_FLAT`, 0.03) and reported as
+       undetermined, falling back to start-aligned, rather than picking a lag out
+       of the noise and quoting it as a measurement. The same applies when a lag
+       beats start-aligned by less than `_AUTO_MARGIN` (0.05), and when the best
+       overlap anywhere is under `_AUTO_WEAK` (0.6) the log says to check the fit
+       rather than trusting the sheet.
+
+       The cost is one extra decode pass over both clips, and it is only paid
+       when there is something to fit: a mask that already covers the range needs
+       no search. Frames are downscaled to 192 px for the measurement.
+
+     - **Skip frames: placing a shorter mask on a longer clip.** *Skip at the
+       start* / *Skip at the end* cut the **source** timeline, and the mask is
+       always read from its own frame 1 — so neither skip spends a mask frame,
+       and the two clips stay in lockstep from the first frame that survives.
+       `video.mp4` is 124 frames and `mask2.mp4` is 121, so *skip 3 at the start*
+       is the exact fit: 124 − 3 = 121, and output frame 1 is **source frame 4
+       paired with mask frame 1**. This is the manual half of the same job Auto
+       does by measurement — for when you already know where the mask belongs.
+
+       Both skips count in **range** frames (after *Start* / *End* / *Frame
+       step*), so they compose with a range instead of fighting it: Start=10,
+       End=100, step=1 is 91 frames, and *skip 3* trims that to 88. The live
+       readout under the boxes does the arithmetic as you type —
+       `range 124 frames − skip 3 at the start − skip 0 at the end = 121 frames`
+       — and then says whether the mask is an exact fit, how many frames it is
+       short, or how many are left over. Skips that leave **nothing** are refused:
+       there is no sheet and nothing to clamp to.
+
+     - **A mask shorter than the source is clamped, not refused.** The run stops
+       at the last frame the mask covers and the sheet is that long — with a
+       *full* grid, because the count the layout is built from is the number of
+       frames actually written. This was a hard error first, and the `test_mask`
+       pair is what killed it: `video.mp4` is 124 frames, both masks are 121, and
+       the full range refused to run and told the user to work out `End=121`
+       themselves. The guard was there to stop a wrong *grid*, but a clamp is
+       already a correct grid, just a shorter one — so refusing the work was the
+       wrong shape of guard, and the person who hit it paid for it. It now
+       reports the clamp in three places: the progress log, the layout warnings
+       the result panel renders as a warn box, and the sidecar
+       (`"mask video mask.mp4, clamped to 121 frames"`). The skips above are the
+       intended way to reach an exact fit, so a clamp that fires usually means
+       the skips were left at 0.
+
+       The mask is assumed **start-aligned** — its frame 1 is the source's frame
+       1. A mask that is offset instead would need a start of its own, which is
+       not something the file can tell us.
+
+       A mask *longer* than the source is the same rule from the other side: the
+       extras are never read, and no clamp is claimed.
+
+       A mask that yields **no** frames over the range is still an error — there
+       is no sheet to build and nothing to clamp to.
      - **A mask at another resolution.** Resized to the source and said out loud
        once — the same pair is 544×544 against a 1024×1024 source, which is a
        normal thing to hand over and a silently mis-scaled alpha is not. Resizing
@@ -162,11 +279,14 @@ model.
 
      **One thing to know before ticking the verification gate with a mask on.**
      I4 asks "did a bright pixel lose its alpha", on the assumption that *bright
-     = subject*. On a clip whose backdrop is mid-grey that assumption is false and
-     I4 fails with or without the mask: on the `test_mask` clip (backdrop grey
-     88) VRMBG-3.0 alone reports **3108116 of 3541704 bright px lost, largest hole
-     113898 px**, and the mask path reports the same signature. It is a property
-     of the clip's backdrop, not of where the alpha came from.
+     = subject*. A pixel counts as bright when `max(RGB)` exceeds `bright`, which
+     is **64** — and on the `test_mask` clip the backdrop is grey **~160**
+     (measured from a 4 px border band on frames 5..124; frame 1 is a magenta
+     title card at ~152), so the backdrop itself is bright and the assumption is
+     already false before any mask is involved. I4 therefore fails with or
+     without one: VRMBG-3.0 alone reports **3108116 of 3541704 bright px lost,
+     largest hole 113898 px**, and the mask path reports the same signature. It
+     is a property of the clip's backdrop, not of where the alpha came from.
 3. **Matte repair** — two passes over the matted frames, both **off by default**,
    because both are destructive when the matte did not leak. Asked for, not
    assumed.
@@ -1950,7 +2070,7 @@ takes its defaults from `/api/defaults`, so the stale process re-applied them.
 | `test_verify.py` | mutation test for the sheet verifier |
 | `test_config_types.py` | regression test for config type coercion |
 | `test_matte_repair.py` | both repair passes, including what the rim band and the connectivity test protect |
-| `test_mask_video.py` | the optional mask video: the alpha mapping, both switches, the run-out and resize errors, and the page/pipeline/app wiring for the four new keys |
+| `test_mask_video.py` | the optional mask video: the alpha mapping, both switches, the short-mask clamp, the start/end skips that fit a short mask onto a long clip, the auto fit (including the two statistics it replaced and the case where the clips do not determine it), the resize, and the page/pipeline/app wiring for the seven new keys |
 | `test_editor.py` | op-layer checks + mutation hooks |
 | `sweep_editor_mutants.py` | runs every mutation hook and classifies it MISSED / CAUGHT / BROKEN, so a hook that stopped applying cannot read as a pass |
 | `smoke_editor_api.py` | HTTP integration smoke for the editor |

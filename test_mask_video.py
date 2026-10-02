@@ -5,9 +5,11 @@ The feature is one sentence long -- "white is the subject, black is the
 background, apply it to the source" -- and every interesting case is an edge of
 it:
 
-  * a mask that runs out before the source. `zip` stops at the shorter clip, so
-    the run would come back with fewer frames than were asked for and the grid
-    would be built from the wrong count. Section 4 pins the error.
+  * a mask that runs out before the source. This was a hard error first, and the
+    user hit it (121-frame mask, 124-frame clip) -- the guard was protecting the
+    grid from a frame count taken off the wrong clip, but the count comes from
+    `len(paths)`, so a clamp is already a correct grid, just a shorter one.
+    Section 4 pins the clamp and the three places it is reported.
   * a mask at another resolution. Resized, and said out loud once. Section 5.
   * a mask an encoder muddied. Section 6.
   * the start/end/step range applying to BOTH clips, or the two drift a frame
@@ -179,6 +181,22 @@ check("a path copied out of Explorer loses its trailing space",
 c = P.merge_cfg({"mask_threshold": "abc"})
 check("garbage threshold falls back to the default",
       c["mask_threshold"] == P.DEFAULT_CFG["mask_threshold"], c["mask_threshold"])
+c = P.merge_cfg({"mask_start_skip": "3", "mask_end_skip": "1"})
+check("mask_start_skip '3' -> 3 (int)",
+      c["mask_start_skip"] == 3 and isinstance(c["mask_start_skip"], int),
+      repr(c["mask_start_skip"]))
+check("mask_end_skip '1' -> 1 (int)",
+      c["mask_end_skip"] == 1 and isinstance(c["mask_end_skip"], int),
+      repr(c["mask_end_skip"]))
+c = P.merge_cfg({"mask_start_skip": "-4", "mask_end_skip": "-1"})
+check("a negative skip floors at 0 rather than walking the mask backwards",
+      c["mask_start_skip"] == 0 and c["mask_end_skip"] == 0,
+      (c["mask_start_skip"], c["mask_end_skip"]))
+c = P.merge_cfg({"mask_start_skip": "abc"})
+check("garbage skip falls back to the default", c["mask_start_skip"] == 0,
+      c["mask_start_skip"])
+check("the skips default to 0/0 -- nothing moves unless asked",
+      P.DEFAULT_CFG["mask_start_skip"] == 0 and P.DEFAULT_CFG["mask_end_skip"] == 0)
 check("no mask_video in the payload -> the empty default",
       P.merge_cfg({})["mask_video"] == "")
 
@@ -237,19 +255,51 @@ try:
           set(np.unique(sheet[..., 3]).tolist()) == {0, 255},
           np.unique(sheet[..., 3]).tolist()[:6])
 
-    print("\n--- 4. a mask that runs out is an error, not a short sheet ---")
+    print("\n--- 4. a short mask clamps the sheet, and says so in three places ---")
+    # This was a hard error first, and the user hit it: a 121-frame mask against
+    # a 124-frame clip refused to run and made them work out End=121. The error
+    # existed to protect the grid from a frame count taken off the wrong clip --
+    # but the count comes from len(paths), so clamping is already a *correct*
+    # grid, just a shorter one. Refusing the work was the wrong guard.
     short = write_video(os.path.join(tmp, "short.avi"), mask_frames()[:4])
-    try:
-        P.run_pipeline({"video": src, "mask_video": short, "want_sidecar": False,
-                        "want_preview": False},
-                       os.path.join(tmp, "run2"))
-        check("a short mask raises", False, "it returned normally")
-    except ValueError as ex:
-        check("a short mask raises ValueError", True)
-        check("and says which frame it died on",
-              "ran out at source frame 5 of 6" in str(ex), str(ex)[:160])
-        check("and names the End that would line the two up",
-              "End=4 lines the two up" in str(ex), str(ex)[:200])
+    res_s = P.run_pipeline({"video": src, "mask_video": short, "want_sidecar": True,
+                            "want_preview": False, "cell_mode": "none"},
+                           os.path.join(tmp, "run2"))
+    check("the sheet is as long as the mask, not the source",
+          len(res_s["frames"]) == 4, len(res_s["frames"]))
+    check("and the grid is still full -- it was built from the sheet's own count",
+          res_s["layout"]["columns"] * res_s["layout"]["rows"] == 4,
+          (res_s["layout"]["columns"], res_s["layout"]["rows"]))
+    # column 20 is inside block 3 (18..31) and outside block 0 (6..19), so a
+    # one-frame slip reads as transparent where it must be opaque.
+    check("the four frames are the source's first four, with the mask's alpha",
+          int(read_rgba(res_s["frames"][3])[20, 20, 3]) == 255
+          and int(read_rgba(res_s["frames"][3])[20, 6, 3]) == 0,
+          int(read_rgba(res_s["frames"][3])[20, 20, 3]))
+    warn = " ".join(res_s["layout"]["warnings"])
+    check("the clamp is a layout warning, not only a log line",
+          "covers only 4 of the 6" in warn, res_s["layout"]["warnings"])
+    check("and it points at the skips, which are the tool for this",
+          "Skip at start / Skip at end" in warn, warn)
+    check("the sidecar records the clamp",
+          "clamped to 4 frames" in res_s["sidecar"].get("matte_note", ""),
+          res_s["sidecar"].get("matte_note"))
+    check("no mask, no clamp -- the plain path still yields all six",
+          len(P.run_pipeline({"video": src, "do_matte": False, "want_sidecar": False,
+                              "want_preview": False, "cell_mode": "none"},
+                             os.path.join(tmp, "run2b"))["frames"]) == 6)
+    # The other side of the same coin: a longer mask is read only as far as the
+    # source goes, and nothing is claimed about a clamp.
+    long_mask = write_video(os.path.join(tmp, "long.avi"),
+                            mask_frames() + mask_frames()[:2])
+    res_l = P.run_pipeline({"video": src, "mask_video": long_mask, "want_sidecar": False,
+                            "want_preview": False, "cell_mode": "none"},
+                           os.path.join(tmp, "run2c"))
+    check("a mask longer than the source still yields the source's length",
+          len(res_l["frames"]) == 6, len(res_l["frames"]))
+    check("and no clamp is claimed for it",
+          not res_l["layout"]["warnings"], res_l["layout"]["warnings"])
+
     # A mask that exists but is entirely before the range: the source yields
     # frames from 4, the 2-frame mask yields none, so the very first `next()`
     # fails and there is no "frame it died on" to name.
@@ -257,7 +307,7 @@ try:
     err0 = _err(lambda: P.run_pipeline(
         {"video": src, "mask_video": early, "start": 4, "want_sidecar": False,
          "want_preview": False}, os.path.join(tmp, "run3b")))
-    check("a mask that never overlaps the range is its own error",
+    check("a mask that never overlaps the range is still an error",
           "produced no frames at all" in err0, err0[:160])
     err = _err(lambda: P.run_pipeline(
         {"video": src, "mask_video": os.path.join(tmp, "nope.avi")},
@@ -336,7 +386,82 @@ try:
           ", binarised at 128" in hard["sidecar"].get("matte_note", ""),
           hard["sidecar"].get("matte_note"))
 
-    print("\n--- 7. no mask still means no mask ---")
+    print("\n--- 7. the skips place a shorter mask on the clip ---")
+    # The user's own arithmetic, in miniature: 124 frames of video against 121 of
+    # mask, and the missing three are at one end or the other. Here 6 against 4.
+    # The skip cuts the SOURCE and consumes no mask frame -- so source frame k
+    # pairs with mask frame k - skip_a, and a wrong skip shows up as the alpha of
+    # a different pose, which is exactly what these assertions look for.
+    four = write_video(os.path.join(tmp, "four.avi"), mask_frames()[:4])
+
+    # skip 2 at the start: the range is 6, the mask covers 4, exact fit.
+    r = P.run_pipeline({"video": src, "mask_video": four, "want_sidecar": True,
+                        "want_preview": False, "cell_mode": "none",
+                        "mask_start_skip": 2},
+                       os.path.join(tmp, "run10"))
+    check("skip 2 + a 4-frame mask is an exact fit (4 frames, no clamp)",
+          len(r["frames"]) == 4 and not r["layout"]["warnings"],
+          (len(r["frames"]), r["layout"]["warnings"]))
+    f0 = read_rgba(r["frames"][0])
+    # source frame 3's block is 14..27; mask frame 1's block is 6..19
+    check("output frame 1 is source frame 3 (its own subject is there)",
+          tuple(int(v) for v in f0[20, 18, :3]) == SUBJECT_BGR[::-1],
+          (f0[20, 18, :3].tolist(), SUBJECT_BGR[::-1]))
+    check("...paired with mask frame 1, not mask frame 3",
+          int(f0[20, 18, 3]) == 255 and int(f0[20, 25, 3]) == 0,
+          (int(f0[20, 18, 3]), int(f0[20, 25, 3])))
+    check("the frames are numbered by output position, so the first is 001",
+          os.path.basename(r["frames"][0]).endswith("_001.png"),
+          os.path.basename(r["frames"][0]))
+    check("the sidecar records the skips",
+          "skip 2/0 (start/end)" in r["sidecar"].get("matte_note", ""),
+          r["sidecar"].get("matte_note"))
+
+    # skip 2 at the end: the same four frames of mask, dropped off the back of
+    # the range instead, so source frame 4 meets mask frame 4 and they agree.
+    r2 = P.run_pipeline({"video": src, "mask_video": four, "want_sidecar": False,
+                         "want_preview": False, "cell_mode": "none",
+                         "mask_end_skip": 2},
+                        os.path.join(tmp, "run11"))
+    check("skip 2 at the end is also an exact fit", len(r2["frames"]) == 4,
+          len(r2["frames"]))
+    f3 = read_rgba(r2["frames"][3])
+    check("output frame 4 is source frame 4 paired with mask frame 4",
+          tuple(int(v) for v in f3[20, 30, :3]) == SUBJECT_BGR[::-1]
+          and int(f3[20, 30, 3]) == 255,
+          (f3[20, 30, :3].tolist(), int(f3[20, 30, 3])))
+
+    # both ends: the mask slides one frame the other way
+    r3 = P.run_pipeline({"video": src, "mask_video": four, "want_sidecar": False,
+                         "want_preview": False, "cell_mode": "none",
+                         "mask_start_skip": 1, "mask_end_skip": 1},
+                        os.path.join(tmp, "run12"))
+    check("skip 1 + 1 leaves 4 of 6", len(r3["frames"]) == 4, len(r3["frames"]))
+    g0 = read_rgba(r3["frames"][0])
+    check("output frame 1 is source frame 2 with mask frame 1",
+          tuple(int(v) for v in g0[20, 22, :3]) == SUBJECT_BGR[::-1]
+          and int(g0[20, 8, 3]) == 255 and int(g0[20, 22, 3]) == 0,
+          (int(g0[20, 8, 3]), int(g0[20, 22, 3])))
+
+    # a mask still short AFTER the skips is still clamped, and the note counts
+    # against the trimmed range rather than the whole one
+    r4 = P.run_pipeline({"video": src, "mask_video": four, "want_sidecar": False,
+                         "want_preview": False, "cell_mode": "none",
+                         "mask_start_skip": 1},
+                        os.path.join(tmp, "run13"))
+    check("4 frames of mask against 5 wanted clamps to 4",
+          len(r4["frames"]) == 4, len(r4["frames"]))
+    check("and the note counts the trimmed range, not the source's",
+          "covers only 4 of the 5 frames the range asks for"
+          in " ".join(r4["layout"]["warnings"]),
+          r4["layout"]["warnings"])
+    check("skips that leave nothing are refused",
+          "leave none of the 6" in _err(lambda: P.run_pipeline(
+              {"video": src, "mask_video": four, "mask_start_skip": 4,
+               "mask_end_skip": 3, "want_sidecar": False, "want_preview": False},
+              os.path.join(tmp, "run14"))))
+
+    print("\n--- 8. no mask still means no mask ---")
     res5 = P.run_pipeline({"video": src, "mask_video": "", "do_matte": False,
                            "want_sidecar": True, "want_preview": False,
                            "cell_mode": "none"},
@@ -345,10 +470,127 @@ try:
           res5["sidecar"].get("matte") == "none", res5["sidecar"].get("matte"))
     check("and the frames are fully opaque",
           int(read_rgba(res5["frames"][0])[..., 3].min()) == 255)
+
+    # ----------------------------------------------------------------------- #
+    # 9. auto: the run finds the offset instead of being told it
+    # ----------------------------------------------------------------------- #
+    # The fixture's block moves 4 px per frame (`block_x`), which is what makes
+    # an offset identifiable at all -- a subject that never moves leaves every
+    # lag overlapping every other one, and auto must say so rather than guess.
+    print("\n--- 9. auto finds the offset, and admits when it cannot ---")
+    frames = source_frames()                       # N = 6 frames, block walks
+    write_video(os.path.join(tmp, "autosrc.avi"), frames)
+
+    # a mask drawn on frames 3..6 -- so it belongs 2 frames into the range
+    late = write_video(os.path.join(tmp, "autolate.avi"),
+                       mask_frames()[2:])
+    cfg_auto = P.merge_cfg({"video": os.path.join(tmp, "autosrc.avi"),
+                            "mask_video": late, "mask_auto": True})
+    log = []
+    a, b, short = P.find_mask_offset(cfg_auto["video"], late, cfg_auto,
+                                     P.count_frames(cfg_auto["video"]),
+                                     P.count_frames(late),
+                                     emit=lambda s, f, m: log.append(m))
+    check("a mask drawn on frames 3..6 is placed at skip 2/0", (a, b) == (2, 0), (a, b))
+    check("and the sidecar line names it", short == "auto fit 2/0 (start/end)", short)
+    check("the log says which source frame the mask's frame 1 pairs with",
+          "pairs with source frame 3" in (log[-1] if log else ""), log)
+    check("and quotes the overlap that won",
+          "overlap 1.00 there" in (log[-1] if log else ""), log)
+
+    # a mask drawn on frames 1..4 -- start-aligned, and auto must not move it
+    early = write_video(os.path.join(tmp, "autoearly.avi"), mask_frames()[:4])
+    log = []
+    a, b, short = P.find_mask_offset(cfg_auto["video"], early, cfg_auto,
+                                     P.count_frames(cfg_auto["video"]),
+                                     P.count_frames(early),
+                                     emit=lambda s, f, m: log.append(m))
+    check("a mask drawn on frames 1..4 stays start-aligned", (a, b) == (0, 2), (a, b))
+    check("and the log shows what it was kept against",
+          "at the best other offset" in (log[-1] if log else ""), log)
+
+    # a subject that does not move: the offset is not in the clips, and auto has
+    # to say that rather than pick a lag out of the noise
+    still = np.zeros((H, W, 3), np.uint8)
+    still[:, :] = BACKDROP_BGR
+    still[SUBJ_Y[0]:SUBJ_Y[1], block_x(0):block_x(0) + 14] = SUBJECT_BGR
+    stillsrc = write_video(os.path.join(tmp, "stillsrc.avi"), [still] * N)
+    stillmsk = write_video(os.path.join(tmp, "stillmsk.avi"), mask_frames()[:4])
+    log = []
+    a, b, short = P.find_mask_offset(stillsrc, stillmsk, cfg_auto,
+                                     P.count_frames(stillsrc),
+                                     P.count_frames(stillmsk),
+                                     emit=lambda s, f, m: log.append(m))
+    check("a subject that never moves falls back to start-aligned", (a, b) == (0, 2), (a, b))
+    check("and the log says the clips do not determine the fit",
+          "do not determine the fit" in (log[-1] if log else ""), log)
+
+    # a mask that covers the whole range needs no fit, and auto must not invent one
+    full = write_video(os.path.join(tmp, "autofull.avi"), mask_frames())
+    a, b, short = P.find_mask_offset(cfg_auto["video"], full, cfg_auto,
+                                     P.count_frames(cfg_auto["video"]),
+                                     P.count_frames(full))
+    check("a mask that covers the range is left alone", (a, b) == (0, 0), (a, b))
+
+    # end to end: auto OVERRIDES the manual boxes rather than adding to them
+    ra = P.run_pipeline({"video": os.path.join(tmp, "autosrc.avi"),
+                         "mask_video": late, "mask_auto": True,
+                         "mask_start_skip": 99, "mask_end_skip": 99,
+                         "want_sidecar": True, "want_preview": False,
+                         "cell_mode": "none"},
+                        os.path.join(tmp, "run15"))
+    check("auto runs with the manual skips set to nonsense", len(ra["frames"]) == 4,
+          len(ra["frames"]))
+    ga = read_rgba(ra["frames"][0])
+    check("output frame 1 is source frame 3, which is what auto chose",
+          tuple(int(v) for v in ga[20, 22, :3]) == SUBJECT_BGR[::-1]
+          and int(ga[20, 22, 3]) == 255 and int(ga[20, 8, 3]) == 0,
+          (ga[20, 22, :3].tolist(), int(ga[20, 22, 3]), int(ga[20, 8, 3])))
+    check("the sidecar records the fit auto chose, not the boxes",
+          "auto fit 2/0 (start/end)" in ra["sidecar"].get("matte_note", ""),
+          ra["sidecar"].get("matte_note"))
+    check("and claims no clamp",
+          "clamped" not in ra["sidecar"].get("matte_note", ""),
+          ra["sidecar"].get("matte_note"))
+
+    # the manual path is untouched by any of this
+    rm = P.run_pipeline({"video": os.path.join(tmp, "autosrc.avi"),
+                         "mask_video": late, "mask_auto": False,
+                         "mask_start_skip": 2, "want_sidecar": True,
+                         "want_preview": False, "cell_mode": "none"},
+                        os.path.join(tmp, "run16"))
+    check("with auto off the manual skip still decides, and reaches the same frame",
+          len(rm["frames"]) == 4
+          and "skip 2/0 (start/end)" in rm["sidecar"].get("matte_note", ""),
+          rm["sidecar"].get("matte_note"))
+    check("and the sidecar does not claim auto ran",
+          "auto fit" not in rm["sidecar"].get("matte_note", ""),
+          rm["sidecar"].get("matte_note"))
+
+    # Both boxes ticked is NOT a third behaviour. The mask replaces the model --
+    # `run_pipeline` branches on the mask first -- so this combination has to be
+    # byte-identical to the mask-only run and must never construct the model. It
+    # is the state a user lands on by ticking the two boxes in the panel, so it
+    # is worth pinning rather than leaving to the order of an if/elif.
+    cache = {}
+    rboth = P.run_pipeline({"video": os.path.join(tmp, "autosrc.avi"),
+                            "mask_video": late, "do_matte": True,
+                            "mask_start_skip": 2, "want_sidecar": True,
+                            "want_preview": False, "cell_mode": "none"},
+                           os.path.join(tmp, "run17"), model_cache=cache)
+    check("ticking VRMBG as well never loads the model", cache == {}, cache)
+    check("and the frames are byte-identical to the mask-only run",
+          len(rboth["frames"]) == len(rm["frames"])
+          and all(open(a, "rb").read() == open(b, "rb").read()
+                  for a, b in zip(rboth["frames"], rm["frames"])),
+          (len(rboth["frames"]), len(rm["frames"])))
+    check("and the sidecar still credits the mask",
+          rboth["sidecar"].get("matte") == "mask video",
+          rboth["sidecar"].get("matte"))
 finally:
     shutil.rmtree(tmp, ignore_errors=True)
 
-print("\n--- 8. the wiring: three files, no linker ---")
+print("\n--- 10. the wiring: three files, no linker ---")
 with open(os.path.join(HERE, "ui.html"), encoding="utf-8") as fh:
     ui = fh.read()
 with open(os.path.join(HERE, "app.py"), encoding="utf-8") as fh:
@@ -357,17 +599,61 @@ with open(os.path.join(HERE, "app.py"), encoding="utf-8") as fh:
 _m = re.search(r"const FIELDS = \[(.*?)\];", ui, re.S)
 fields = re.findall(r'"([a-z_0-9]+)"', _m.group(1)) if _m else []
 check("the page's FIELDS list was found", bool(fields), _m)
-for k in ("mask_video", "mask_invert", "mask_binary", "mask_threshold"):
+for k in ("mask_video", "mask_invert", "mask_binary", "mask_threshold",
+          "mask_start_skip", "mask_end_skip", "mask_auto"):
     check("%-16s is in FIELDS (collect() will read it)" % k, k in fields)
     check("%-16s is a key the pipeline knows" % k, k in P.DEFAULT_CFG)
     check("%-16s has a control on the page" % k, ('id="%s"' % k) in ui)
+# The fit readout: the two skip boxes are useless without the arithmetic, and the
+# arithmetic is useless if it is not re-run when any of its five inputs moves.
+check("the page has a mask-fit readout", 'id="maskfit"' in ui)
+check("the readout is recomputed when its inputs move",
+      'for (const id of ["mask_start_skip","mask_end_skip","start","end","frame_step"])'
+      in ui)
+check("the readout is fed the clip's own length by the probe",
+      "SRC_FRAMES = info.frames" in ui and "MASK_FRAMES = d.info.frames" in ui)
+check("the readout names the leftover/short case, not just the numbers",
+      "left over, which are not read" in ui and "short, so the sheet stops at" in ui)
+# Auto owns the offset when it is ticked, so the two boxes have to stop taking
+# input -- and the readout has to stop printing arithmetic the run will not use.
+# A disabled box is the visible half of "auto overrides these"; without it the
+# numbers would sit there looking authoritative while being ignored.
+check("auto disables the two manual skip boxes",
+      'el.disabled = !on || auto' in ui)
+check("auto's own tick re-runs the gate", '$("mask_auto").onchange = syncMask' in ui)
+check("the readout switches to the auto wording when it is ticked",
+      'if ($("mask_auto").checked){' in ui and "The boxes above are ignored" in ui)
+check("auto is gated on the mask path being on, like the path itself",
+      'cfg.mask_auto = $("use_mask").checked && $("mask_auto").checked' in ui)
+# The mask REPLACES the model, so the two are ALTERNATIVES and the page has to
+# make that unreachable-as-a-combination rather than leaving two ticks that can
+# both be on. One radio group, and the two keys the pipeline knows are derived
+# from the single selection.
+check("the two paths are one radio group, not two checkboxes",
+      ui.count('name="matte_src"') == 3
+      and 'type="radio" name="matte_src" id="do_matte"' in ui
+      and 'type="radio" name="matte_src" id="use_mask"' in ui
+      and '<input type="checkbox" id="use_mask"' not in ui)
+check("and there is a third choice for no background removal at all",
+      'type="radio" name="matte_src" id="matte_none"' in ui)
+check("collect() resolves the choice to do_matte, not to a radio's value",
+      'cfg.do_matte = $("do_matte").checked' in ui)
+check("do_matte is out of FIELDS, so the generic loop cannot misread the radio",
+      "do_matte" not in fields)
+check("the starting radio comes from DEFAULT_CFG, not from the markup alone",
+      '$("do_matte").checked = !!d.defaults.do_matte' in ui
+      and '$("matte_none").checked = !d.defaults.do_matte' in ui)
+check("the model's own settings grey when VRMBG is not the chosen path",
+      'el.disabled = !vrmbg' in ui)
+check("but the range settings do not, because every path reads them",
+      '"model_dir","infer_size"' in ui)
 # The generic half of the same guard: a name in FIELDS with no element is
 # skipped by collect() in silence, so every entry is checked, not just the new
 # ones. This is what caught nothing today and will catch the next control.
 missing = [f for f in fields if ('id="%s"' % f) not in ui]
 check("every FIELDS entry has an element (none are silently skipped)",
       not missing, missing)
-check("the mask path is gated on its own checkbox, not on being non-empty",
+check("the mask path is gated on its own radio, not on being non-empty",
       'cfg.mask_video = $("use_mask").checked' in ui)
 check("dropping a mask switches the path on",
       '$("use_mask").checked = true' in ui)

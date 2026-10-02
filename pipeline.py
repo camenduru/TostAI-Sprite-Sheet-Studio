@@ -100,6 +100,28 @@ DEFAULT_CFG = {
     "mask_invert": False,     # off = white is the subject, black the background
     "mask_binary": False,     # off = the mask's own grey becomes the alpha
     "mask_threshold": 128,    # >= this is opaque, when mask_binary is on
+    # Where the mask sits inside the range. A roto tool rarely hands back a mask
+    # the same length as the clip it was drawn on -- the test pair is 124 frames
+    # of video against 121 of mask -- and the missing frames are at one end or
+    # the other, not nowhere. These drop source frames off the front and the back
+    # of the range, so the mask's frame 1 lands on the frame it was actually
+    # drawn for: 124 - 3 - 1 = 120, and a 121-frame mask then covers it with one
+    # to spare. The mask is consumed from its own frame 1 either way, and the
+    # front skip consumes no mask frame at all.
+    #
+    # Counted in *range* frames, i.e. after Start/End/Frame step have had their
+    # say, because that is the sequence the mask is lined up against and the one
+    # the panel's readout does arithmetic on.
+    "mask_start_skip": 0,
+    "mask_end_skip": 0,
+    # Let the run find the fit itself, instead of the two numbers above. Off by
+    # default because it changes *which* frames end up in the sheet, and a knob
+    # that does that should be asked for. Ticked, the skips are ignored and the
+    # offset is measured (see `find_mask_offset`): the two clips' subject-motion
+    # trajectories are correlated at every lag, and the best one wins. It only
+    # has work to do when the mask is shorter than the range -- a mask that
+    # covers the range needs no fit, and then auto costs nothing.
+    "mask_auto": False,
     # repair. Off by default, because it is destructive when the matte did not
     # actually leak: the flood fill walks near-black pixels reachable from the
     # frame border, and that includes the subject's own dark edge where it
@@ -181,12 +203,13 @@ DEFAULT_CFG = {
 # nothing about the real cause. Coerce here rather than trusting the caller.
 _INT_FIELDS = ("infer_size", "start", "end", "frame_step", "black_max", "columns",
                "cell_w", "cell_h", "pad", "max_texture", "fps", "trim_to",
-               "leak_alpha", "bright", "erode_max", "key_tol", "mask_threshold")
+               "leak_alpha", "bright", "erode_max", "key_tol", "mask_threshold",
+               "mask_start_skip", "mask_end_skip")
 _FLOAT_FIELDS = ("gif_scale",)
 _BOOL_FIELDS = ("do_matte", "do_repair", "do_key", "repair_border_only",
                 "key_also_connected", "want_sheet", "want_sidecar",
                 "want_preview", "want_gif", "want_frames", "do_verify", "square_cell",
-                "mask_invert", "mask_binary")
+                "mask_invert", "mask_binary", "mask_auto")
 
 
 def merge_cfg(user):
@@ -216,6 +239,12 @@ def merge_cfg(user):
     # `os.path.exists` is a TypeError from three frames away. `.strip()` because
     # a path copied out of Explorer arrives with a trailing space often enough.
     cfg["mask_video"] = str(cfg["mask_video"] or "").strip()
+    # A negative skip is not a meaning, it is a typo: "-1" would walk the mask
+    # one frame the wrong way and silently hand every frame its neighbour's
+    # alpha. Floor at 0 rather than raising, because the field is a number input
+    # and the arithmetic the panel shows is done on the floored value.
+    cfg["mask_start_skip"] = max(0, cfg["mask_start_skip"])
+    cfg["mask_end_skip"] = max(0, cfg["mask_end_skip"])
     return cfg
 
 
@@ -580,6 +609,246 @@ def mask_to_alpha(mask_frame, invert=False, binary=False, threshold=128):
     return g
 
 
+# --------------------------------------------------------------------------- #
+# auto-fitting the mask to the clip
+# --------------------------------------------------------------------------- #
+
+# Frames are downscaled to this width before tracking. The measurement is a mean
+# of coordinates, so at 192 px it moves by well under a pixel, and the pass
+# costs a fraction of a full-resolution one.
+_TRACK_W = 192
+# How much better than start-aligned a lag has to score before auto takes it.
+# The mask is start-aligned until something says otherwise -- that is the
+# documented assumption -- so a near-tie keeps the assumption.
+_AUTO_MARGIN = 0.05
+# If the whole overlap profile varies by less than this, no offset is really
+# better than any other and the fit is not determined: the two clips simply do
+# not contain the information, and the log says so instead of quoting the winner
+# as though they did. Measured across the profile rather than against the
+# runner-up, because a runner-up test sits on the noise floor and flips on
+# rounding -- the real pair's gradient is 0.02, which is exactly where such a
+# threshold would land.
+_AUTO_FLAT = 0.03
+# A winning overlap below this is a poor placement even if it won outright --
+# worth saying out loud rather than packing a sheet on the strength of it.
+_AUTO_WEAK = 0.6
+# How far apart Otsu's two classes have to land, in levels on 0-255, before the
+# split is believed. A frame with no subject in it has nothing to separate, and
+# Otsu will happily divide its codec noise in two.
+_AUTO_MIN_SEP = 20
+
+
+def _track_frame(bgr):
+    """Downscale one frame for tracking."""
+    import cv2
+    h, w = bgr.shape[:2]
+    if w <= _TRACK_W:
+        return bgr
+    return cv2.resize(bgr, (_TRACK_W, max(1, int(round(h * _TRACK_W / float(w))))),
+                      interpolation=cv2.INTER_AREA)
+
+
+def _border_color(bgr, band=4):
+    """The clip's own backdrop colour, from a band around the frame edge.
+
+    Same idea as the chroma-key stage's re-seed: the backdrop is whatever the
+    frame's border says it is, so nobody has to type a colour in.
+
+    Per FRAME, not once for the clip. Estimating it from the range's first frame
+    only was the first version and it broke on the very pair this was built for:
+    `video.mp4` opens on a magenta title card (border [197, 41, 156]) and cuts to
+    a grey set ([195, 196, 196]) by frame 10. Against a magenta border every grey
+    pixel is "far from the backdrop", so the whole frame counted as subject, the
+    silhouette filled the frame, and every lag overlapped every other one
+    perfectly -- a confident answer with no information in it. A per-frame median
+    costs almost nothing and follows a fade or a cut for free.
+    """
+    h, w = bgr.shape[:2]
+    b = max(1, min(band, h // 8, w // 8))
+    edge = np.concatenate([bgr[:b].reshape(-1, 3), bgr[-b:].reshape(-1, 3),
+                           bgr[:, :b].reshape(-1, 3), bgr[:, -b:].reshape(-1, 3)])
+    return np.median(edge, axis=0)
+
+
+def _src_silhouette(bgr):
+    """The source's subject as a boolean mask, or None if there is none.
+
+    A proxy, not a matte: everything far enough from the frame's own border
+    colour counts as subject, which takes in the shadow and anything else that
+    is not backdrop. That is enough, because auto only asks whether the mask's
+    silhouette lands *on* it.
+
+    "Far enough" is Otsu's split of the distance map rather than a fixed number
+    of levels. A fixed one was the second version and it was the wrong shape of
+    parameter: too low and the codec's soft edge and the shadow join the
+    foreground (the overlap profile went flat), too high and a low-contrast
+    subject drops out. Otsu asks each frame where its own backdrop/subject split
+    is, which is a question the frame can answer; on the test clip it lands at
+    76-87 unaided.
+
+    The split is judged by how far apart the two classes land, not by how large
+    the threshold is. Otsu returns `t = 0` whenever the backdrop is perfectly
+    flat -- every backdrop pixel is a 0 -- and that is a *correct* and very deep
+    split, not a shallow one. Testing the threshold instead rejected every frame
+    of a synthetic fixture with an exactly flat backdrop, and the failure read as
+    "neither clip has a subject in it". A frame with no subject at all has the
+    two classes sitting on top of each other, which is what the depth test
+    catches.
+    """
+    import cv2
+    d = np.abs(bgr.astype(np.int16) - _border_color(bgr).reshape(1, 1, 3)).max(axis=2)
+    d8 = np.clip(d, 0, 255).astype(np.uint8)
+    t, _ = cv2.threshold(d8, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    m = d8 > t
+    n = int(m.sum())
+    # An empty subject and a full-frame one are both "no silhouette to place".
+    if n < 8 or n >= d8.size:
+        return None
+    if float(d8[m].mean()) - float(d8[~m].mean()) < _AUTO_MIN_SEP:
+        return None
+    return m
+
+
+def _mask_silhouette(bgr, cfg):
+    """The mask's subject as a boolean mask, or None if the frame is empty."""
+    g = mask_to_alpha(_track_frame(bgr), cfg["mask_invert"], cfg["mask_binary"],
+                      cfg["mask_threshold"])
+    m = g > 127
+    return m if int(m.sum()) >= 8 else None
+
+
+def _silhouette_track(video, cfg, as_mask, cancel=None):
+    """Per-frame subject silhouettes over the range, for one clip."""
+    out = []
+    for _, bgr in read_video(video, cfg["start"], cfg["end"], cfg["frame_step"]):
+        if cancel and cancel():
+            raise RuntimeError("cancelled")
+        small = _track_frame(bgr)
+        out.append(_mask_silhouette(small, cfg) if as_mask else _src_silhouette(small))
+    return out
+
+
+def find_mask_offset(video, mask_video, cfg, total, mask_n, emit=None, cancel=None):
+    """Which source frames the mask was actually drawn on.
+
+    Returns `(skip_a, skip_b, short)` -- the two skips, and a terse
+    `"auto fit 3/0 (start/end)"` for the sidecar. The full account goes to the
+    log, because a decision about which frames to keep is worth a sentence.
+
+    The two clips are read in lockstep, so the only unknown is *where the mask
+    starts* in the range: `a` source frames dropped off the front, and the rest
+    off the back. Nothing in either file states `a` -- a roto tool does not
+    record which frames it was handed -- so it is measured rather than assumed.
+
+    What is measured is **overlap**: the mask's silhouette is slid along the
+    clip one frame at a time and scored by mean IoU against the source's
+    foreground proxy, and the lag that sits on the subject wins. On a synthetic
+    pair whose subject walks across the frame, with the mask taken from frames
+    6..10 of a 10-frame clip, the profile runs 0.00 / 0.00 / 0.00 / 0.04 / 0.31 /
+    **1.00** -- the right answer by a mile.
+
+    Two earlier statistics were tried and both are worth recording, because each
+    looked reasonable and each failed on a case that matters.
+
+    A **centroid correlation** fails on linear motion. Pearson is invariant to
+    adding a constant, and shifting a straight-line trajectory in time *is*
+    adding a constant, so a subject walking steadily scores 1.00 at every lag and
+    the fit is a coin-flip that always lands on 0. Overlap is not offset-
+    invariant, so it sees the difference -- which is why the fixture above, with
+    the most linear motion possible, is the test that settled it.
+
+    A **fixed distance threshold** instead of Otsu fails on the soft edge: at 40
+    levels the codec's edge and the subject's shadow join the foreground, the
+    silhouette swells to nearly the whole frame, and again every lag overlaps
+    every other one. Hence the adaptive split.
+
+    And when the subject genuinely does not move, every lag overlaps every other
+    one *because it is true* -- the information is not in the clips. That case is
+    detected (`_AUTO_FLAT`) and reported as undetermined rather than being
+    dressed up as a measurement. `a = 0`, the documented start-aligned
+    assumption, is what it falls back to.
+    """
+    if mask_n >= total:
+        return 0, 0, "auto fit 0/0 (start/end)"
+    surplus = total - mask_n
+    src = _silhouette_track(video, cfg, False, cancel)[:total]
+    msk = _silhouette_track(mask_video, cfg, True, cancel)
+    mask_n = min(mask_n, len(msk))
+
+    scores = []
+    for a in range(surplus + 1):
+        vals = []
+        for j in range(mask_n):
+            s, m = src[a + j], msk[j]
+            if s is None or m is None:
+                continue
+            # A mask at another resolution is a normal thing to hand over, and
+            # the main pass resizes it to the source anyway -- so the silhouettes
+            # have to be the same shape before they can be overlapped.
+            if m.shape != s.shape:
+                import cv2
+                m = cv2.resize(m.astype(np.uint8), (s.shape[1], s.shape[0]),
+                               interpolation=cv2.INTER_NEAREST).astype(bool)
+            inter = int(np.logical_and(s, m).sum())
+            union = int(np.logical_or(s, m).sum())
+            if union:
+                vals.append(inter / float(union))
+        scores.append(sum(vals) / len(vals) if vals else float("nan"))
+
+    ranked = sorted([(s, a) for a, s in enumerate(scores) if s == s],
+                    key=lambda t: (-t[0], t[1]))
+    why = ""
+    if not ranked:
+        best, best_a = 0.0, 0
+        why = ("neither clip has a subject in it that could be measured, so "
+               "there is nothing to line up")
+    else:
+        best, best_a = ranked[0]
+        spread = best - ranked[-1][0]
+        if spread < _AUTO_FLAT:
+            # Every offset fits about as well as every other. Either the subject
+            # does not move, or the clips do not describe it -- either way the
+            # offset is not in the data, and lag 0 is the documented assumption.
+            best_a = 0
+            why = ("every offset overlaps the subject about as well as every "
+                   "other (%.2f to %.2f across all %d of them), so the clips do "
+                   "not determine the fit -- start-aligned is assumed"
+                   % (best, ranked[-1][0], len(ranked)))
+        elif best_a != 0 and best < scores[0] + _AUTO_MARGIN:
+            why = ("source frame %d scored %.2f against start-aligned's %.2f, "
+                   "which is not enough to move off the start-aligned assumption"
+                   % (cfg["start"] + best_a * cfg["frame_step"], best, scores[0]))
+            best_a = 0
+        elif best < _AUTO_WEAK:
+            why = ("the best overlap is only %.2f, so the mask does not sit on "
+                   "the subject well anywhere in the range -- check the fit "
+                   "before trusting the sheet" % best)
+
+    skip_a, skip_b = best_a, surplus - best_a
+    short = "auto fit %d/%d (start/end)" % (skip_a, skip_b)
+    if emit:
+        if best_a:
+            head = ("%s -- the mask's frame 1 pairs with source frame %d"
+                    % (short, cfg["start"] + skip_a * cfg["frame_step"]))
+        else:
+            head = "%s -- the mask lines up from the range's start" % short
+        if why:
+            tail = "; " + why
+        elif best_a:
+            tail = ("; overlap %.2f there, against %.2f start-aligned"
+                    % (best, scores[0]))
+        elif len(ranked) > 1:
+            # Keep start-aligned, and show what it was kept against -- a bare
+            # "0.87" reads as a shrug, a gradient reads as a decision.
+            tail = ("; overlap %.2f, against %.2f at the best other offset (%d "
+                    "frame%s over)" % (best, ranked[1][0], ranked[1][1],
+                                       "" if ranked[1][1] == 1 else "s"))
+        else:
+            tail = "; overlap %.2f" % best
+        emit("matte", 0.0, head + tail)
+    return skip_a, skip_b, short
+
+
 def matte_with_mask(video, mask_video, outdir, cfg, emit=None, cancel=None):
     """Write per-frame RGBA PNGs using a mask video as the alpha.
 
@@ -590,57 +859,97 @@ def matte_with_mask(video, mask_video, outdir, cfg, emit=None, cancel=None):
     exactly as good as the mask. That is the trade, and it is why the path is
     opt-in.
 
-    Two things it refuses to do quietly:
+    **A mask shorter than the source is clamped, not refused.** The run stops at
+    the last frame the mask covers and the sheet is that long. This used to be a
+    hard error, on the grounds that `zip` would silently hand back fewer frames
+    than were asked for -- but that is only a problem if the frame count is taken
+    from the *source*, and `run_pipeline` takes it from `len(paths)`. So a short
+    mask yields a short sheet with a correct, full grid, which is exactly what
+    someone holding a 121-frame mask and a 124-frame clip is asking for. The
+    error was protecting against a wrong layout by refusing the work, and the
+    person who hit it (start=1, end=last, 121 against 124) had to compute the End
+    value themselves. So it clamps and **says so** -- in the log, in the layout
+    warnings the result panel renders, and in the sidecar -- because a sheet that
+    quietly stops three frames early is a different kind of wrong.
 
-    * **A mask that runs out before the source.** `zip` would stop at the
-      shorter clip and hand back a sheet with fewer frames than were asked for
-      -- and the frame count is what the grid is built from, so the failure
-      would surface as a wrong layout, not as a short mask. It is an error
-      instead, and it says which frame it died on.
-    * **A mask at another resolution.** Resized to the source, and said out loud
-      once: a mask at half size is a normal thing to hand over, a silently
-      mis-scaled alpha is not.
+    The mask is placed by **`mask_start_skip` / `mask_end_skip`**: source frames
+    dropped off the front and the back of the range, so the mask's frame 1 lands
+    on the frame it was actually drawn for. A roto tool rarely hands back a mask
+    the same length as the clip -- the pair this was built for is 124 frames of
+    video against 121 of mask -- and the missing frames are at one end or the
+    other, not nowhere. The skips are cuts on the SOURCE timeline, so neither
+    consumes a mask frame; the mask is always read from its own frame 1. They are
+    counted in range frames, i.e. after Start/End/Frame step.
 
-    The source's own frame count is what the run is built on, so a mask with
-    MORE frames in range is fine -- the extras are never read.
+    **`mask_auto` finds those two numbers instead of being told them.** Ticked,
+    the manual skips are ignored and `find_mask_offset` measures the offset from
+    the two clips' subject motion. It stashes its one-line account in
+    `cfg["_mask_auto_note"]` for the sidecar -- the same underscore-internal
+    trick `_sheet` uses, so the two-tuple return does not have to grow.
 
-    Returns the list of frame paths, the same shape `matte_video` returns.
+    A mask at another resolution is resized to the source and said out loud
+    once: a mask at half size is a normal thing to hand over, a silently
+    mis-scaled alpha is not.
+
+    A mask with MORE frames in range is fine -- the extras are never read.
+
+    Returns `(paths, note)`: `note` is "" normally, and a sentence naming the
+    clamp when the mask ran short.
     """
     import cv2
     os.makedirs(outdir, exist_ok=True)
     prefix = cfg["prefix"] or os.path.splitext(os.path.basename(video))[0]
     total = max(1, count_frames(video, cfg["start"], cfg["end"], cfg["frame_step"]))
+    cfg["_mask_auto_note"] = ""
+    if cfg["mask_auto"]:
+        # Auto overrides the boxes rather than adding to them: two sources of
+        # truth for the same offset would leave the manual numbers silently
+        # inert, which is worse than the boxes being visibly disabled.
+        skip_a, skip_b, auto_note = find_mask_offset(
+            video, mask_video, cfg, total,
+            count_frames(mask_video, cfg["start"], cfg["end"], cfg["frame_step"]),
+            emit=emit, cancel=cancel)
+        cfg["_mask_auto_note"] = auto_note
+    else:
+        skip_a = int(cfg["mask_start_skip"])
+        skip_b = int(cfg["mask_end_skip"])
+    if skip_a + skip_b >= total:
+        raise ValueError(
+            "the mask skips (%d at the start, %d at the end) leave none of the %d "
+            "frames in the range -- lower them, or widen Start/End."
+            % (skip_a, skip_b, total))
+    want = total - skip_a - skip_b
     src = read_video(video, cfg["start"], cfg["end"], cfg["frame_step"])
     msk = read_video(mask_video, cfg["start"], cfg["end"], cfg["frame_step"])
     binary = bool(cfg["mask_binary"])
     paths = []
     said_size = False
+    short_at = None
     for idx, bgr in src:
         if cancel and cancel():
             raise RuntimeError("cancelled")
+        # The two skips are cuts on the SOURCE timeline, so neither one consumes
+        # a mask frame: the mask is always read from its own frame 1. Skipping a
+        # mask frame instead would silently shift every alpha after it.
+        if idx < skip_a:
+            continue
+        if idx >= skip_a + want:
+            break
         try:
             _, mframe = next(msk)
         except StopIteration:
-            # The source frame this died on, 1-based, and the last one the mask
-            # actually covers -- so the message can name the End value that lines
-            # the two up instead of only saying they disagree. Measured on the
-            # user's own pair (video 124 frames, mask 121) that is the whole
-            # difference between a usable error and a riddle.
-            died_on = cfg["start"] + idx * cfg["frame_step"]
-            if idx == 0:
+            # The mask is shorter than the trimmed range: stop here and run the
+            # frames it does cover. The count the layout is built from is
+            # len(paths), so this is a shorter sheet, not a broken grid.
+            if idx == skip_a:
                 raise ValueError(
                     "the mask video produced no frames at all over the selected "
-                    "range (start=%d, end=%s, step=%d) -- is it readable, and does "
-                    "the range overlap it?"
-                    % (cfg["start"], cfg["end"] or "last", cfg["frame_step"]))
-            last = died_on - cfg["frame_step"]
-            raise ValueError(
-                "the mask video ran out at source frame %d of %d -- it has fewer "
-                "frames than the source over the selected range (start=%d, end=%s, "
-                "step=%d). It covers up to frame %d, so End=%d lines the two up; "
-                "or give a mask that covers the whole range."
-                % (died_on, total, cfg["start"], cfg["end"] or "last",
-                   cfg["frame_step"], last, last))
+                    "range (start=%d, end=%s, step=%d, skips=%d/%d) -- is it "
+                    "readable, and does the range overlap it?"
+                    % (cfg["start"], cfg["end"] or "last", cfg["frame_step"],
+                       skip_a, skip_b))
+            short_at = cfg["start"] + idx * cfg["frame_step"]
+            break
         h, w = bgr.shape[:2]
         a = mask_to_alpha(mframe, cfg["mask_invert"], binary, cfg["mask_threshold"])
         if a.shape[:2] != (h, w):
@@ -654,12 +963,27 @@ def matte_with_mask(video, mask_video, outdir, cfg, emit=None, cancel=None):
             a = cv2.resize(a, (w, h), interpolation=(
                 cv2.INTER_NEAREST if binary else cv2.INTER_LINEAR))
         rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-        p = os.path.join(outdir, "%s_%03d.png" % (prefix, idx + 1))
+        # Numbered by position in the OUTPUT, not by source frame. With skips on
+        # the frame is no longer the idx'th of the range, and a frames/ dir whose
+        # names run 004..123 invites the next reader to think frames are missing.
+        p = os.path.join(outdir, "%s_%03d.png" % (prefix, len(paths) + 1))
         cv2.imwrite(p, cv2.cvtColor(np.dstack([rgb, a]), cv2.COLOR_RGBA2BGRA))
         paths.append(p)
-        if emit and (idx % 5 == 0 or idx + 1 == total):
-            emit("matte", (idx + 1) / float(total), "frame %d/%d" % (idx + 1, total))
-    return paths
+        if emit and (len(paths) % 5 == 1 or len(paths) == want):
+            emit("matte", len(paths) / float(want),
+                 "frame %d/%d" % (len(paths), want))
+
+    note = ""
+    if short_at is not None:
+        # Not emitted from here: `run_pipeline` appends this to the layout's
+        # warnings, and the layout stage is what prints them. Emitting in both
+        # places put the same paragraph in the log twice, which reads like a bug.
+        note = ("the mask video covers only %d of the %d frames the range asks "
+                "for (it ended at source frame %d), so the sheet is %d frames. "
+                "Tick Auto, or set Skip at start / Skip at end, to place a mask "
+                "that is a different length to the clip."
+                % (len(paths), want, short_at, len(paths)))
+    return paths, note
 
 
 # --------------------------------------------------------------------------- #
@@ -1445,11 +1769,12 @@ def run_pipeline(cfg, workdir, emit=None, cancel=None, model_cache=None):
       % (info["frames"], info["fps"], info["width"], info["height"]))
 
     frames_dir = os.path.join(workdir, "frames")
+    mask_short = ""
     if mask_video:
         e("matte", 0.0, "mask video %s (VRMBG-3.0 not run)"
           % os.path.basename(mask_video))
-        paths = matte_with_mask(video, mask_video, frames_dir, cfg,
-                                emit=e, cancel=cancel)
+        paths, mask_short = matte_with_mask(video, mask_video, frames_dir, cfg,
+                                            emit=e, cancel=cancel)
     elif cfg["do_matte"]:
         model = None
         if model_cache is not None:
@@ -1525,6 +1850,12 @@ def run_pipeline(cfg, workdir, emit=None, cancel=None, model_cache=None):
     e("layout", 0.0, "measuring subject")
     bbox = subject_bbox(paths)
     layout = solve_layout(n, info["width"], info["height"], bbox, cfg)
+    # A clamped mask belongs with the layout's own warnings, not only in the
+    # log: it is a statement about the sheet the user is looking at ("this is
+    # 121 frames, not the 124 you asked for"), and the result panel renders this
+    # list as a warn box. A log line scrolls past; this does not.
+    if mask_short:
+        layout["warnings"].append(mask_short)
     for w in layout["warnings"]:
         e("layout", 0.5, w)
     e("layout", 1.0, "%dx%d grid of %dx%d, sheet %dx%d"
@@ -1541,11 +1872,22 @@ def run_pipeline(cfg, workdir, emit=None, cancel=None, model_cache=None):
     # difference can survive.
     matte_note = "vrmbg-3.0 autoregressive"
     if mask_video:
-        matte_note = ("mask video %s%s%s"
+        skips = ""
+        if cfg["mask_auto"]:
+            # The one-liner the search decided on. Recorded even when it came
+            # back 0/0, because "auto ran and chose not to move" and "auto was
+            # off" are different facts about the sheet.
+            skips = ", %s" % (cfg.get("_mask_auto_note") or "auto fit")
+        elif cfg["mask_start_skip"] or cfg["mask_end_skip"]:
+            skips = (", skip %d/%d (start/end)"
+                     % (cfg["mask_start_skip"], cfg["mask_end_skip"]))
+        matte_note = ("mask video %s%s%s%s%s"
                       % (os.path.basename(mask_video),
+                         skips,
                          ", inverted" if cfg["mask_invert"] else "",
                          ", binarised at %d" % cfg["mask_threshold"]
-                         if cfg["mask_binary"] else ""))
+                         if cfg["mask_binary"] else "",
+                         ", clamped to %d frames" % n if mask_short else ""))
 
     if cfg["want_sheet"]:
         sp = os.path.join(workdir, "%s_sheet.png" % prefix)

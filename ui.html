@@ -193,8 +193,19 @@
     <details class="panel" open>
       <summary>2 &middot; Background removal</summary>
       <div class="body">
-        <div class="chk"><input type="checkbox" id="do_matte" checked>
+        <!-- ONE choice, not two switches. The two paths are alternatives -- the
+             mask REPLACES the model rather than refining it -- so as a pair of
+             checkboxes they could both be ticked and one of them would silently
+             do nothing (with both ticked the run is byte-identical to the
+             mask-only one, and the model is never even constructed). Radios make
+             that state unreachable, so nothing has to be greyed to say which of
+             the two is in charge. -->
+        <div class="chk"><input type="radio" name="matte_src" id="do_matte" checked>
           <span>Remove background with VRMBG-3.0</span></div>
+        <div class="chk"><input type="radio" name="matte_src" id="use_mask">
+          <span>Use a mask video instead of the model</span></div>
+        <div class="chk"><input type="radio" name="matte_src" id="matte_none">
+          <span>Neither &mdash; keep the video's own alpha</span></div>
         <label>Model folder</label>
         <input type="text" id="model_dir">
         <div class="grid2">
@@ -215,15 +226,13 @@
           <div><label>Start frame</label><input type="number" id="start" value="1" min="1"></div>
           <div><label>End frame (0 = all)</label><input type="number" id="end" value="0" min="0"></div>
         </div>
-        <div class="hint">Picked from the clip when you read it: the largest size
+        <div class="hint" id="infer_hint">Picked from the clip when you read it: the largest size
           that does not exceed its longer edge (1024 / 768 / 640), so a 640px
           sprite clip is not matted at 1024. Matching a small source is
           ~2&times; faster and agrees with the 1024 matte to a mean of 0.0055.
           Override it for real footage.</div>
 
         <div class="sep"></div>
-        <div class="chk"><input type="checkbox" id="use_mask">
-          <span>Use a mask video instead of the model</span></div>
         <label>Mask video &mdash; white is the subject, black is the background</label>
         <input type="text" id="mask_video" placeholder="C:\...\mask.mp4">
         <div class="row" style="margin-top:8px">
@@ -232,6 +241,15 @@
         </div>
         <div class="drop" id="maskdrop">or drop a mask video here to upload</div>
         <div id="maskinfo"></div>
+        <div class="chk"><input type="checkbox" id="mask_auto">
+          <span>Auto &mdash; find the fit itself, and ignore the two below</span></div>
+        <div class="grid2">
+          <div><label>Skip at start</label>
+               <input type="number" id="mask_start_skip" value="0" min="0" step="1"></div>
+          <div><label>Skip at end</label>
+               <input type="number" id="mask_end_skip" value="0" min="0" step="1"></div>
+        </div>
+        <div class="hint" id="maskfit"></div>
         <div class="chk"><input type="checkbox" id="mask_invert">
           <span>Invert it (black is the subject)</span></div>
         <div class="chk"><input type="checkbox" id="mask_binary">
@@ -243,11 +261,25 @@
           transparent, grey keeps the edge soft. Nothing loads on the GPU &mdash; the
           model above is <b>not</b> run &mdash; so the result is exactly as good as the
           mask. For a clip the model gets wrong, or one you rotoscoped yourself.<br>
-          Start / End / Frame step apply to the mask too, and it must have at least as
-          many frames in that range as the source; a mask at another resolution is
-          resized to it. <i>Hard edge</i> is off by default because a hand-drawn edge
-          is the mask's whole advantage &mdash; turn it on for a mask an encoder has
-          muddied, or one that is only black and white but arrived soft.</div>
+          <b>Auto</b> finds that placement instead of being told it: the mask's
+          silhouette is slid along the clip one frame at a time, scored by how well
+          it overlaps the subject, and the offset that sits on it wins. Tick it and
+          the two boxes are ignored. It reports what it measured in the log &mdash;
+          and says so when the two clips do not determine the fit, which is what
+          happens when the subject never moves, rather than pretending otherwise.
+          <b>Skip at start / Skip at end</b> are the same placement done by hand, for
+          when you know where the mask belongs: they drop that many frames off the
+          front and the back of the range. A roto tool rarely returns a mask the same
+          length as the clip &mdash; 124 frames of video against 121 of mask &mdash;
+          and the missing frames are at one end or the other: skip 3 at the start and
+          the mask's frame 1 goes to source frame 4. The skips cut the <i>source</i>;
+          the mask is always read from its own frame 1, so neither one shifts the
+          alpha. The line above does the arithmetic for you.
+          A mask at another resolution is resized to the source; one that is still
+          short after the skips is clamped, and says so.<br>
+          <i>Hard edge</i> is off by default because a hand-drawn edge is the mask's
+          whole advantage &mdash; turn it on for a mask an encoder has muddied, or one
+          that is only black and white but arrived soft.</div>
       </div>
     </details>
 
@@ -461,9 +493,10 @@ setTheme(document.documentElement.dataset.theme || "light");
 const FIELDS = ["video","model_dir","infer_size","start","end","frame_step","black_max",
   "cell_mode","cell_w","cell_h","pad","square_cell","columns","max_texture","fps",
   "play_mode","trim_to","anchor","blend","gif_scale","gif_bg","leak_alpha","bright",
-  "erode_max","do_matte","do_repair","repair_border_only","do_key","key_color","key_tol",
+  "erode_max","do_repair","repair_border_only","do_key","key_color","key_tol",
   "key_also_connected",
   "mask_video","mask_invert","mask_binary","mask_threshold",
+  "mask_start_skip","mask_end_skip","mask_auto",
   "want_sheet","want_sidecar","want_preview",
   "want_gif","want_frames","do_verify"];
 
@@ -484,12 +517,21 @@ function collect(){
   cfg.infer_size = Number($("infer_size").value);
   cfg.max_texture = Number($("max_texture").value);
   cfg.square_cell = $("square_cell").checked;
-  // The mask path is gated on its own checkbox rather than on being non-empty.
-  // A path left in the box from an earlier experiment would otherwise keep the
+  // The three background-removal radios are ONE choice, and they resolve to the
+  // two keys the pipeline knows. `do_matte` is deliberately not in FIELDS: the
+  // generic loop reads `el.value` off anything that is not a checkbox, which for
+  // a radio is the value attribute and not whether it is selected, so it is set
+  // here from `.checked` instead.
+  cfg.do_matte = $("do_matte").checked;
+  // The mask path is gated on its own radio rather than on being non-empty. A
+  // path left in the box from an earlier experiment would otherwise keep the
   // model from running with nothing on screen saying so -- the pipeline treats a
-  // non-empty mask as "the mask IS the background removal", so the box has to be
-  // the thing that decides. Unticked sends "", which is the default.
+  // non-empty mask as "the mask IS the background removal", so the radio has to
+  // be the thing that decides. Not selected sends "", which is the default.
   cfg.mask_video = $("use_mask").checked ? String(cfg.mask_video || "").trim() : "";
+  // Same gate for auto: it is a way of *placing* the mask, so with no mask there
+  // is nothing for it to place, and a stale tick must not travel with the job.
+  cfg.mask_auto = $("use_mask").checked && $("mask_auto").checked;
   return cfg;
 }
 
@@ -517,7 +559,14 @@ fetch("/api/defaults").then(r=>r.json()).then(d=>{
     if (el.type === "checkbox") el.checked = !!d.defaults[f];
     else el.value = d.defaults[f];
   }
+  // `do_matte` is a radio and so is not in FIELDS -- the generic loop would set
+  // its value attribute rather than its selection. Seeded by hand from the same
+  // default the checkbox used to take, so DEFAULT_CFG stays the one place the
+  // starting path is decided.
+  $("do_matte").checked = !!d.defaults.do_matte;
+  $("matte_none").checked = !d.defaults.do_matte;
   bindLive();
+  syncMask();
 });
 function editLink(rel){
   // Forward slashes only, always. This string is handed to the server, which
@@ -592,6 +641,11 @@ function showInfo(info, preview, divs, video, backdrop, inferSize){
       divs.filter(d=>d>1).map(d=>'<option value="'+d+'">'+d+' ('+(info.frames/d)+' rows)</option>').join("");
     sel.value = cur && divs.includes(Number(cur)) ? cur : "0";
   }
+  // The mask-fit line is arithmetic on the clip's own length, so reading the
+  // clip is what feeds it. (Defined further down; hoisted, and this only ever
+  // runs from a click.)
+  SRC_FRAMES = info.frames || 0;
+  renderMaskFit();
 }
 
 $("probe").onclick = async () => {
@@ -662,21 +716,119 @@ async function uploadFile(f, which){
   }
 }
 
-// ---- the mask path is one switch
+// ---- one of three paths, and only its own fields are live
 // The pipeline reads a non-empty mask path as "this IS the background removal",
-// so the fields only matter when the box is ticked. Disabling them keeps that
-// legible; the values survive, so untick/re-tick is not a lossy operation.
+// so the mask fields only matter when the mask radio is the selected one.
+// Disabling the others keeps that legible; the values survive, so switching
+// paths back and forth is not a lossy operation.
 function syncMask(){
-  const on = $("use_mask").checked;
+  const on = $("use_mask").checked;              // the mask is the chosen path
+  const vrmbg = $("do_matte").checked;           // the model is the chosen path
+  const auto = $("mask_auto").checked;
   for (const id of ["mask_video","mask_invert","mask_binary","mask_threshold",
-                    "maskbrowse","maskprobe"]){
+                    "mask_auto","maskbrowse","maskprobe"]){
     const el = $(id); if (el) el.disabled = !on;
   }
+  // Auto OWNS the offset when it is ticked, so the two boxes stop taking input.
+  // Disabled rather than hidden: the numbers are still the answer for anyone who
+  // wants to place the mask by hand, and seeing them greyed is what says the
+  // tick is doing something.
+  for (const id of ["mask_start_skip","mask_end_skip"]){
+    const el = $(id); if (el) el.disabled = !on || auto;
+  }
+  // The model's own settings go the same way when VRMBG is not the chosen path.
+  // This is NOT greying a control that is in charge of anything -- the radio
+  // already says which path runs -- it is only so a dead setting stops looking
+  // live. `Frame step` / `Start` / `End` are deliberately left alone: they are
+  // the *range*, which every path reads.
+  for (const id of ["model_dir","infer_size"]){
+    const el = $(id); if (el) el.disabled = !vrmbg;
+  }
+  $("infer_hint").classList.toggle("off", !vrmbg);
   const zd = $("maskdrop");
   zd.classList.toggle("off", !on);
   $("maskinfo").classList.toggle("off", !on);
+  renderMaskFit();
 }
-$("use_mask").onchange = syncMask;
+// One radio group, so a change on any of the three re-runs the gate. Radios fire
+// `change` only on the one being selected, so all three are wired.
+for (const id of ["do_matte","use_mask","matte_none"]) $(id).onchange = syncMask;
+$("mask_auto").onchange = syncMask;
+
+// ---- fitting the mask to the clip
+// A roto tool rarely returns a mask the same length as the clip it was drawn on,
+// and the frames it is missing are at one end or the other. Rather than make the
+// user work out the offset, the two skip boxes are the offset and this line is
+// the arithmetic: it shows the range, what the skips leave, and whether the mask
+// covers it -- so "124 and 121" turns into "skip 3" in front of them.
+let SRC_FRAMES = 0, MASK_FRAMES = 0;
+
+function rangeLen(){
+  const n = SRC_FRAMES;
+  if (!n) return 0;
+  let end = Number($("end").value) || 0;
+  if (!end || end > n) end = n;
+  const start = Math.max(1, Number($("start").value) || 1);
+  const step = Math.max(1, Number($("frame_step").value) || 1);
+  const k = end - start + 1;
+  return k <= 0 ? 0 : Math.ceil(k / step);
+}
+
+function renderMaskFit(){
+  const el = $("maskfit");
+  if (!el) return;
+  const total = rangeLen();
+  if (!total){
+    el.innerHTML = '<span class="muted">Read the video and the mask and this line '
+      + 'will show how the two line up.</span>';
+    return;
+  }
+  // Auto is the one case where the panel cannot show the answer: the offset is
+  // measured from the two clips, and that happens in the run. So it says what
+  // the run is going to decide and what it has to work with, and the log carries
+  // the verdict. Printing the manual arithmetic here would be worse than
+  // useless -- those numbers are not the ones the run will use.
+  if ($("mask_auto").checked){
+    let h = '<b>auto</b> &mdash; the run slides the mask along the clip and uses '
+      + 'the offset where it sits on the subject. The boxes above are ignored.';
+    if (!MASK_FRAMES){
+      h += '<br><span class="muted">Read the mask and this line will say what '
+        + 'there is to fit.</span>';
+    } else if (MASK_FRAMES >= total){
+      h += '<br>range <b>' + total + '</b> frames, mask <b>' + MASK_FRAMES
+        + '</b> &mdash; it covers the range, so there is nothing to fit.';
+    } else {
+      h += '<br>range <b>' + total + '</b> frames, mask <b>' + MASK_FRAMES
+        + '</b> &mdash; <b>' + (total - MASK_FRAMES) + '</b> short, so that many '
+        + 'have to come off one end or the other. Which end is measured, and the '
+        + 'log says what it found.';
+    }
+    el.innerHTML = h;
+    return;
+  }
+  const a = Math.max(0, Number($("mask_start_skip").value) || 0);
+  const b = Math.max(0, Number($("mask_end_skip").value) || 0);
+  const want = total - a - b;
+  let h = 'range <b>' + total + '</b> frames &minus; skip <b>' + a
+        + '</b> at the start &minus; skip <b>' + b + '</b> at the end = <b>'
+        + want + '</b> frames';
+  if (!MASK_FRAMES){
+    h += '<br><span class="muted">Read the mask to check it covers that.</span>';
+  } else if (want <= 0){
+    h += '<br><span class="err">that leaves no frames &mdash; lower the skips</span>';
+  } else {
+    const d = MASK_FRAMES - want;
+    if (d === 0) h += '<br>mask <b>' + MASK_FRAMES + '</b> &mdash; an exact fit.';
+    else if (d > 0) h += '<br>mask <b>' + MASK_FRAMES + '</b> &mdash; ' + d
+      + ' frame' + (d === 1 ? '' : 's') + ' left over, which are not read.';
+    else h += '<br>mask <b>' + MASK_FRAMES + '</b> &mdash; ' + (-d)
+      + ' short, so the sheet stops at ' + MASK_FRAMES + ' frames.';
+  }
+  el.innerHTML = h;
+}
+for (const id of ["mask_start_skip","mask_end_skip","start","end","frame_step"])
+  $(id).addEventListener("input", renderMaskFit);
+renderMaskFit();
 
 // ---- reading the mask
 // Same probe route as the source: what you need to see is that the mask is
@@ -689,12 +841,14 @@ $("maskprobe").onclick = async () => {
     headers:{"Content-Type":"application/json"}, body: JSON.stringify({video:v})});
   const d = await r.json();
   if (!d.ok){ $("maskinfo").innerHTML = '<div class="err">'+esc(d.error)+'</div>'; return; }
+  MASK_FRAMES = d.info.frames || 0;
   $("maskinfo").innerHTML = '<div class="kv">'
     + '<b>frames</b><span>' + d.info.frames + '</span>'
     + '<b>size</b><span>' + d.info.width + ' &times; ' + d.info.height + '</span>'
     + '</div>'
     + (d.preview ? '<div class="vpreview"><img src="' + d.preview + '"></div>' : '')
     + '<div class="hint">frame 1 of the mask. White is kept, black is dropped.</div>';
+  renderMaskFit();
 };
 syncMask();
 
