@@ -256,10 +256,17 @@
   .bigbar .fr{font-variant-numeric:tabular-nums}
   .bigbar .sp{flex:1}
   .bigbar input[type=range]{flex:1;min-width:80px}
+  /* Centred with `margin:auto` on the canvas, NOT with align-items/justify-content
+     on this box. A flex container that centres an item larger than itself puts
+     the item's start edge above/left of the scroll origin, and that overflow is
+     unreachable -- measured at 83% zoom: 81px of the sprite's top were cut off
+     with scrollTop already at its limit of 0, so the top could never be seen.
+     Auto margins absorb the free space while the canvas fits and collapse to 0
+     when it does not, which keeps the whole canvas scrollable. */
   .bigview{overflow:auto;border:1px solid var(--bd2);
-          border-radius:6px;background:var(--panel2);display:flex;align-items:center;
-          justify-content:center;flex:1;min-width:0;min-height:0}
-  .bigview canvas{image-rendering:pixelated;display:block;flex:none}
+          border-radius:6px;background:var(--panel2);display:flex;
+          flex:1;min-width:0;min-height:0}
+  .bigview canvas{image-rendering:pixelated;display:block;flex:none;margin:auto}
   .strip{display:flex;gap:3px;overflow-x:auto;padding:4px;border:1px solid var(--bd);
          border-radius:6px;background:var(--panel);margin-top:6px;min-height:56px}
   .strip canvas{flex:0 0 auto;border:1px solid transparent;border-radius:3px;
