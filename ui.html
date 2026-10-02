@@ -86,6 +86,11 @@
   .chk{display:flex;align-items:center;gap:7px;margin:8px 0;font-size:13px;color:var(--tx)}
   .chk input{accent-color:var(--acc)}
   .hint{font-size:11.5px;color:var(--mut);margin-top:4px;line-height:1.45}
+  /* Separates the mask-video block from the model block inside one panel: the
+     two are alternatives for the same job, not two halves of one setting, and
+     without a rule the mask fields read as more model options. */
+  .sep{border-top:1px solid var(--bd2);margin:15px 0 2px}
+  .off{opacity:.45}
   button{font:inherit;padding:7px 13px;border:1px solid var(--bd);
          background:var(--panel);border-radius:7px;cursor:pointer;color:var(--tx)}
   button:hover:not(:disabled){background:var(--bd2)}
@@ -215,6 +220,34 @@
           sprite clip is not matted at 1024. Matching a small source is
           ~2&times; faster and agrees with the 1024 matte to a mean of 0.0055.
           Override it for real footage.</div>
+
+        <div class="sep"></div>
+        <div class="chk"><input type="checkbox" id="use_mask">
+          <span>Use a mask video instead of the model</span></div>
+        <label>Mask video &mdash; white is the subject, black is the background</label>
+        <input type="text" id="mask_video" placeholder="C:\...\mask.mp4">
+        <div class="row" style="margin-top:8px">
+          <button id="maskbrowse">Browse&hellip;</button>
+          <button id="maskprobe">Read mask</button>
+        </div>
+        <div class="drop" id="maskdrop">or drop a mask video here to upload</div>
+        <div id="maskinfo"></div>
+        <div class="chk"><input type="checkbox" id="mask_invert">
+          <span>Invert it (black is the subject)</span></div>
+        <div class="chk"><input type="checkbox" id="mask_binary">
+          <span>Hard edge &mdash; binarise at the threshold</span></div>
+        <label>Mask threshold <span class="muted" id="mask_threshold_v">128</span></label>
+        <input type="range" id="mask_threshold" min="1" max="255" value="128">
+        <div class="hint">A second clip read frame-for-frame beside the source, whose
+          brightness becomes the alpha: white keeps the source pixel, black makes it
+          transparent, grey keeps the edge soft. Nothing loads on the GPU &mdash; the
+          model above is <b>not</b> run &mdash; so the result is exactly as good as the
+          mask. For a clip the model gets wrong, or one you rotoscoped yourself.<br>
+          Start / End / Frame step apply to the mask too, and it must have at least as
+          many frames in that range as the source; a mask at another resolution is
+          resized to it. <i>Hard edge</i> is off by default because a hand-drawn edge
+          is the mask's whole advantage &mdash; turn it on for a mask an encoder has
+          muddied, or one that is only black and white but arrived soft.</div>
       </div>
     </details>
 
@@ -430,6 +463,7 @@ const FIELDS = ["video","model_dir","infer_size","start","end","frame_step","bla
   "play_mode","trim_to","anchor","blend","gif_scale","gif_bg","leak_alpha","bright",
   "erode_max","do_matte","do_repair","repair_border_only","do_key","key_color","key_tol",
   "key_also_connected",
+  "mask_video","mask_invert","mask_binary","mask_threshold",
   "want_sheet","want_sidecar","want_preview",
   "want_gif","want_frames","do_verify"];
 
@@ -450,12 +484,18 @@ function collect(){
   cfg.infer_size = Number($("infer_size").value);
   cfg.max_texture = Number($("max_texture").value);
   cfg.square_cell = $("square_cell").checked;
+  // The mask path is gated on its own checkbox rather than on being non-empty.
+  // A path left in the box from an earlier experiment would otherwise keep the
+  // model from running with nothing on screen saying so -- the pipeline treats a
+  // non-empty mask as "the mask IS the background removal", so the box has to be
+  // the thing that decides. Unticked sends "", which is the default.
+  cfg.mask_video = $("use_mask").checked ? String(cfg.mask_video || "").trim() : "";
   return cfg;
 }
 
 function bindLive(){    for (const [id,suf] of [["black_max",""],["pad",""],["max_texture",""],
                           ["gif_scale",""],["leak_alpha",""],["bright",""],
-                          ["erode_max",""],["key_tol",""]]){
+                          ["erode_max",""],["key_tol",""],["mask_threshold",""]]){
     const el = $(id), out = $(id+"_v");
     if (!el || !out) continue;
     const upd = () => out.textContent = el.value;
@@ -569,36 +609,94 @@ $("probe").onclick = async () => {
 // ---- browse: the native OS picker, uploading like a drop
 // Browse opens the system file picker and the chosen clip uploads exactly as
 // if dropped on the zone below -- one picker shared by both, so the two ways
-// in cannot drift apart.
-function pickNative(){
+// in cannot drift apart. `which` is "video" or "mask"; both routes are the same
+// code, so the mask zone cannot grow a second, different set of rules.
+function pickNative(which){
   const inp = document.createElement("input");
   inp.type = "file"; inp.accept = "video/*,.mp4,.mov,.mkv,.webm,.gif";
-  inp.onchange = () => inp.files[0] && uploadFile(inp.files[0]);
+  inp.onchange = () => inp.files[0] && uploadFile(inp.files[0], which);
   inp.click();
 }
-$("browse").onclick = pickNative;
 
 // ---- upload (raw body, no multipart dependency)
-const drop = $("drop");
-["dragenter","dragover"].forEach(e => drop.addEventListener(e, ev => {
-  ev.preventDefault(); drop.classList.add("hot"); }));
-["dragleave","drop"].forEach(e => drop.addEventListener(e, ev => {
-  ev.preventDefault(); drop.classList.remove("hot"); }));
-drop.addEventListener("drop", ev => {
-  const f = ev.dataTransfer.files[0];
-  if (f) uploadFile(f);
-});
-drop.addEventListener("click", pickNative);
-async function uploadFile(f){
-  drop.textContent = "uploading " + f.name + " (" + (f.size/1048576).toFixed(1) + " MB)…";
-  const r = await fetch("/api/upload?name=" + encodeURIComponent(f.name),
+function wireDrop(zone, which){
+  ["dragenter","dragover"].forEach(e => zone.addEventListener(e, ev => {
+    ev.preventDefault(); zone.classList.add("hot"); }));
+  ["dragleave","drop"].forEach(e => zone.addEventListener(e, ev => {
+    ev.preventDefault(); zone.classList.remove("hot"); }));
+  zone.addEventListener("drop", ev => {
+    const f = ev.dataTransfer.files[0];
+    if (f) uploadFile(f, which);
+  });
+  // The arrow is load-bearing: a bare `pickNative` would be handed the click
+  // event as its `which` argument, and every mask drop would upload as a video.
+  zone.addEventListener("click", () => pickNative(which));
+}
+wireDrop($("drop"), "video");
+wireDrop($("maskdrop"), "mask");
+
+async function uploadFile(f, which){
+  which = which || "video";
+  const mask = which === "mask";
+  const zone = mask ? $("maskdrop") : $("drop");
+  zone.textContent = "uploading " + f.name + " (" + (f.size/1048576).toFixed(1) + " MB)…";
+  // The mask goes to its own folder: a mask exported beside its source is often
+  // named the same as it, and both used to land in uploads/ -- so dropping the
+  // mask overwrote the clip it belongs to.
+  const r = await fetch("/api/upload?name=" + encodeURIComponent(f.name)
+                        + (mask ? "&sub=masks" : ""),
                         {method:"POST", body: f});
   const d = await r.json();
-  if (!d.ok){ drop.textContent = "upload failed"; return; }
-  drop.textContent = "uploaded " + f.name + " — click to replace";
-  $("video").value = d.path;
-  $("probe").click();
+  if (!d.ok){ zone.textContent = "upload failed"; return; }
+  zone.textContent = "uploaded " + f.name + " — click to replace";
+  if (mask){
+    // Dropping a mask is an unambiguous statement of intent, so it switches the
+    // path on rather than leaving it inert in the box.
+    $("mask_video").value = d.path;
+    $("use_mask").checked = true;
+    syncMask();
+    $("maskprobe").click();
+  } else {
+    $("video").value = d.path;
+    $("probe").click();
+  }
 }
+
+// ---- the mask path is one switch
+// The pipeline reads a non-empty mask path as "this IS the background removal",
+// so the fields only matter when the box is ticked. Disabling them keeps that
+// legible; the values survive, so untick/re-tick is not a lossy operation.
+function syncMask(){
+  const on = $("use_mask").checked;
+  for (const id of ["mask_video","mask_invert","mask_binary","mask_threshold",
+                    "maskbrowse","maskprobe"]){
+    const el = $(id); if (el) el.disabled = !on;
+  }
+  const zd = $("maskdrop");
+  zd.classList.toggle("off", !on);
+  $("maskinfo").classList.toggle("off", !on);
+}
+$("use_mask").onchange = syncMask;
+
+// ---- reading the mask
+// Same probe route as the source: what you need to see is that the mask is
+// white-on-black and the same length as the clip, and frame 1 is enough to say.
+$("maskprobe").onclick = async () => {
+  const v = $("mask_video").value.trim();
+  if (!v){ $("maskinfo").innerHTML = ""; return; }
+  $("maskinfo").innerHTML = '<div class="hint">reading&hellip;</div>';
+  const r = await fetch("/api/probe", {method:"POST",
+    headers:{"Content-Type":"application/json"}, body: JSON.stringify({video:v})});
+  const d = await r.json();
+  if (!d.ok){ $("maskinfo").innerHTML = '<div class="err">'+esc(d.error)+'</div>'; return; }
+  $("maskinfo").innerHTML = '<div class="kv">'
+    + '<b>frames</b><span>' + d.info.frames + '</span>'
+    + '<b>size</b><span>' + d.info.width + ' &times; ' + d.info.height + '</span>'
+    + '</div>'
+    + (d.preview ? '<div class="vpreview"><img src="' + d.preview + '"></div>' : '')
+    + '<div class="hint">frame 1 of the mask. White is kept, black is dropped.</div>';
+};
+syncMask();
 
 // ---- run
 let JOB = null, POLL = null;

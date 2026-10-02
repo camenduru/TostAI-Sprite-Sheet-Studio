@@ -10,9 +10,9 @@ https://github.com/user-attachments/assets/7aec9682-719a-45fd-842c-abe9877205ea
 Two tools in one server:
 
 1. **Generator** — turn a raw video into a game-ready sprite sheet:
-   **VRMBG-3.0 video matting → optional backdrop repair → tight auto-crop →
-   packed grid sheet + sidecar JSON + preview player + GIF**, with an invariant
-   gate that checks the result instead of trusting it.
+   **VRMBG-3.0 video matting (or an optional mask video) → optional backdrop
+   repair → tight auto-crop → packed grid sheet + sidecar JSON + preview player
+   + GIF**, with an invariant gate that checks the result instead of trusting it.
 2. **Editor** — open any existing sheet (from a run, from `walk/`, from
    `sprites/`, or any PNG + sidecar) and fix it: align the pivot, repair the
    matte, key out a colour, repaint, re-grid, re-time, re-export.
@@ -104,6 +104,69 @@ model.
    **playable preview of the clip**, and the valid column counts.
 2. **Background removal** — VRMBG-3.0, autoregressive along time. Pick the
    inference size, a frame range and a step.
+   - **…or a mask video instead.** An optional second clip, read frame-for-frame
+     beside the source, whose brightness *is* the alpha: **white keeps the source
+     pixel, black makes it transparent, grey keeps the edge soft.** That is the
+     convention every roto tool and every "alpha matte" export already uses.
+     Tick *Use a mask video instead of the model* and the path becomes the whole
+     of the background removal — **VRMBG-3.0 is not run at all**, nothing loads
+     on the GPU, and the sheet is exactly as good as the mask. That trade is the
+     point (the usual reason to hand over a mask is that the model got a clip
+     wrong), and it is why the path is behind its own checkbox: a path left in
+     the box from an earlier experiment cannot silently keep the model from
+     running, because `collect()` sends `""` whenever the box is unticked.
+     Dropping a mask on its zone ticks the box for you — that is an unambiguous
+     statement of intent, so it is not left inert.
+
+     The mask lands in `uploads/masks/`, not `uploads/`. A mask exported beside
+     its source is very often named the same as it, and both used to go to the
+     same folder, so dropping the mask **overwrote the clip it belonged to** and
+     the run then read a mask as its own video.
+
+     *Start* / *End* / *Frame step* apply to the mask too — the two clips are read
+     in lockstep, which is what keeps the alpha on the right pose. Two things it
+     refuses to do quietly:
+
+     - **A mask that runs out.** `zip` would stop at the shorter clip and hand
+       back fewer frames than were asked for; the frame count is what the grid is
+       built from, so that failure would surface as a wrong *layout*, not as a
+       short mask. It is an error, and it names the fix. Measured on the
+       `test_mask` pair (`video.mp4` 124 frames, `mask.mp4` 121), the full range
+       gives: *"the mask video ran out at source frame 122 of 124 … It covers up
+       to frame 121, so **End=121** lines the two up."*
+     - **A mask at another resolution.** Resized to the source and said out loud
+       once — the same pair is 544×544 against a 1024×1024 source, which is a
+       normal thing to hand over and a silently mis-scaled alpha is not. Resizing
+       is not free, and the `test_mask` files measure what it costs: `mask.mp4`
+       (544×544) and `mask2.mp4` (1024×1024) are the **same** mask (correlation
+       0.9917, RMS 13.6 on 0–255), but the half-size one leaves a **3.80 px** mean
+       silhouette ramp against the native one's **1.68 px** — 2.3× blurrier,
+       because the LINEAR resize softens the contour the mask was drawn with.
+       **Feed the mask at the source's resolution when you have the choice.** The
+       resize is a safety net, not a feature.
+
+     *Invert it* is for a mask drawn the other way round (black subject on
+     white). *Hard edge* binarises at the threshold, and is **off by default**
+     because a hand-drawn edge is a mask's whole advantage over a matte — a
+     threshold throws it away for a staircase. It is there for the two cases
+     where the edge is already gone: a mask an encoder has muddied (a background
+     that was black decodes to 3,5,2 and leaves the sheet at alpha 3 instead of
+     0), and one that is genuinely black-and-white but arrived soft. The
+     threshold is applied *after* the invert.
+
+     The sidecar records which of the two ran (`"matte": "mask video"`) and names
+     the clip and the switches in `matte_note`, because a sheet whose alpha came
+     from a hand-made mask and one whose alpha came from the model look identical
+     once they are packed, and the sidecar is the only place that difference
+     survives.
+
+     **One thing to know before ticking the verification gate with a mask on.**
+     I4 asks "did a bright pixel lose its alpha", on the assumption that *bright
+     = subject*. On a clip whose backdrop is mid-grey that assumption is false and
+     I4 fails with or without the mask: on the `test_mask` clip (backdrop grey
+     88) VRMBG-3.0 alone reports **3108116 of 3541704 bright px lost, largest hole
+     113898 px**, and the mask path reports the same signature. It is a property
+     of the clip's backdrop, not of where the alpha came from.
 3. **Matte repair** — two passes over the matted frames, both **off by default**,
    because both are destructive when the matte did not leak. Asked for, not
    assumed.
@@ -1887,6 +1950,7 @@ takes its defaults from `/api/defaults`, so the stale process re-applied them.
 | `test_verify.py` | mutation test for the sheet verifier |
 | `test_config_types.py` | regression test for config type coercion |
 | `test_matte_repair.py` | both repair passes, including what the rim band and the connectivity test protect |
+| `test_mask_video.py` | the optional mask video: the alpha mapping, both switches, the run-out and resize errors, and the page/pipeline/app wiring for the four new keys |
 | `test_editor.py` | op-layer checks + mutation hooks |
 | `sweep_editor_mutants.py` | runs every mutation hook and classifies it MISSED / CAUGHT / BROKEN, so a hook that stopped applying cannot read as a pass |
 | `smoke_editor_api.py` | HTTP integration smoke for the editor |

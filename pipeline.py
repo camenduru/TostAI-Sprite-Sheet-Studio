@@ -83,6 +83,23 @@ DEFAULT_CFG = {
     "start": 1,
     "end": 0,                 # 0 = to the last frame
     "frame_step": 1,
+    # A mask video: an optional second clip that IS the background removal.
+    # White is the subject, black is the background -- that is the convention
+    # every roto tool and every "alpha matte" export already uses, and it is the
+    # one the user named. Its frames are read in lockstep with the source (same
+    # start/end/step) and its grey becomes the alpha, so a hand-drawn soft edge
+    # stays soft.
+    #
+    # Non-empty means VRMBG-3.0 is NOT run. The model is not refined by the mask,
+    # it is replaced: the usual reason to hand one over is that the model got a
+    # clip wrong, and running both would spend the GPU time the mask exists to
+    # save. That trade is the whole point of the path, so it is opt-in -- and
+    # `ui.html` gates the path on its own checkbox, so a path left in the box
+    # from an earlier experiment cannot silently keep the model from running.
+    "mask_video": "",
+    "mask_invert": False,     # off = white is the subject, black the background
+    "mask_binary": False,     # off = the mask's own grey becomes the alpha
+    "mask_threshold": 128,    # >= this is opaque, when mask_binary is on
     # repair. Off by default, because it is destructive when the matte did not
     # actually leak: the flood fill walks near-black pixels reachable from the
     # frame border, and that includes the subject's own dark edge where it
@@ -164,11 +181,12 @@ DEFAULT_CFG = {
 # nothing about the real cause. Coerce here rather than trusting the caller.
 _INT_FIELDS = ("infer_size", "start", "end", "frame_step", "black_max", "columns",
                "cell_w", "cell_h", "pad", "max_texture", "fps", "trim_to",
-               "leak_alpha", "bright", "erode_max", "key_tol")
+               "leak_alpha", "bright", "erode_max", "key_tol", "mask_threshold")
 _FLOAT_FIELDS = ("gif_scale",)
 _BOOL_FIELDS = ("do_matte", "do_repair", "do_key", "repair_border_only",
                 "key_also_connected", "want_sheet", "want_sidecar",
-                "want_preview", "want_gif", "want_frames", "do_verify", "square_cell")
+                "want_preview", "want_gif", "want_frames", "do_verify", "square_cell",
+                "mask_invert", "mask_binary")
 
 
 def merge_cfg(user):
@@ -193,6 +211,11 @@ def merge_cfg(user):
     # Canonical on the way in, so the sidecar, the verifier and the picker all
     # name the same colour however the client spelled it.
     cfg["key_color"] = norm_key_color(cfg["key_color"])
+    # A path field, so it is coerced to a string: the browser sends "" for an
+    # unticked mask, but a hand-rolled client can send null, and `None` reaching
+    # `os.path.exists` is a TypeError from three frames away. `.strip()` because
+    # a path copied out of Explorer arrives with a trailing space often enough.
+    cfg["mask_video"] = str(cfg["mask_video"] or "").strip()
     return cfg
 
 
@@ -522,6 +545,123 @@ def count_frames(video, start=1, end=0, step=1):
     return (n + step - 1) // step
 
 
+def mask_to_alpha(mask_frame, invert=False, binary=False, threshold=128):
+    """One mask frame -> an alpha plane. White is the subject, black is the
+    background.
+
+    Luminance rather than a single channel: the mask may be greyscale, or
+    colour-coded by whatever drew it (a white-on-green export, a blue-screen
+    pass), and `COLOR_BGR2GRAY` reads all three the way it reads a neutral one
+    -- a grey mask is a fixed point of it, so nothing is lost on the common
+    case. A frame that arrives already single-channel is passed straight
+    through, and one that carries a real alpha band uses that band, because a
+    video with an alpha channel IS a mask and its alpha is the honest answer.
+
+    `binary` is off by default and that is deliberate. A mask's whole advantage
+    over a matte is that a person drew its edge; a threshold throws that edge
+    away for a staircase. It is here for the two cases where the edge is
+    already gone: a mask an encoder has muddied (a background that was black
+    decodes to 3,5,2 and leaves the sheet at alpha 3 instead of 0), and one
+    that is genuinely black-and-white but arrived soft.
+
+    Returns a uint8 plane, the same size as the mask frame.
+    """
+    import cv2
+    if mask_frame.ndim == 2:
+        g = mask_frame
+    elif mask_frame.shape[2] == 4:
+        g = mask_frame[..., 3]
+    else:
+        g = cv2.cvtColor(mask_frame, cv2.COLOR_BGR2GRAY)
+    if invert:
+        g = 255 - g
+    if binary:
+        g = np.where(g >= int(threshold), 255, 0).astype(np.uint8)
+    return g
+
+
+def matte_with_mask(video, mask_video, outdir, cfg, emit=None, cancel=None):
+    """Write per-frame RGBA PNGs using a mask video as the alpha.
+
+    The mask is a second clip read in lockstep with the source -- same
+    start/end/step -- whose white pixels are the subject and whose black pixels
+    are the background. It REPLACES the matte model rather than refining it:
+    nothing loads VRMBG-3.0 and nothing runs on the GPU, so the result is
+    exactly as good as the mask. That is the trade, and it is why the path is
+    opt-in.
+
+    Two things it refuses to do quietly:
+
+    * **A mask that runs out before the source.** `zip` would stop at the
+      shorter clip and hand back a sheet with fewer frames than were asked for
+      -- and the frame count is what the grid is built from, so the failure
+      would surface as a wrong layout, not as a short mask. It is an error
+      instead, and it says which frame it died on.
+    * **A mask at another resolution.** Resized to the source, and said out loud
+      once: a mask at half size is a normal thing to hand over, a silently
+      mis-scaled alpha is not.
+
+    The source's own frame count is what the run is built on, so a mask with
+    MORE frames in range is fine -- the extras are never read.
+
+    Returns the list of frame paths, the same shape `matte_video` returns.
+    """
+    import cv2
+    os.makedirs(outdir, exist_ok=True)
+    prefix = cfg["prefix"] or os.path.splitext(os.path.basename(video))[0]
+    total = max(1, count_frames(video, cfg["start"], cfg["end"], cfg["frame_step"]))
+    src = read_video(video, cfg["start"], cfg["end"], cfg["frame_step"])
+    msk = read_video(mask_video, cfg["start"], cfg["end"], cfg["frame_step"])
+    binary = bool(cfg["mask_binary"])
+    paths = []
+    said_size = False
+    for idx, bgr in src:
+        if cancel and cancel():
+            raise RuntimeError("cancelled")
+        try:
+            _, mframe = next(msk)
+        except StopIteration:
+            # The source frame this died on, 1-based, and the last one the mask
+            # actually covers -- so the message can name the End value that lines
+            # the two up instead of only saying they disagree. Measured on the
+            # user's own pair (video 124 frames, mask 121) that is the whole
+            # difference between a usable error and a riddle.
+            died_on = cfg["start"] + idx * cfg["frame_step"]
+            if idx == 0:
+                raise ValueError(
+                    "the mask video produced no frames at all over the selected "
+                    "range (start=%d, end=%s, step=%d) -- is it readable, and does "
+                    "the range overlap it?"
+                    % (cfg["start"], cfg["end"] or "last", cfg["frame_step"]))
+            last = died_on - cfg["frame_step"]
+            raise ValueError(
+                "the mask video ran out at source frame %d of %d -- it has fewer "
+                "frames than the source over the selected range (start=%d, end=%s, "
+                "step=%d). It covers up to frame %d, so End=%d lines the two up; "
+                "or give a mask that covers the whole range."
+                % (died_on, total, cfg["start"], cfg["end"] or "last",
+                   cfg["frame_step"], last, last))
+        h, w = bgr.shape[:2]
+        a = mask_to_alpha(mframe, cfg["mask_invert"], binary, cfg["mask_threshold"])
+        if a.shape[:2] != (h, w):
+            if not said_size:
+                said_size = True
+                if emit:
+                    emit("matte", 0.0, "mask is %dx%d, resized to the source's %dx%d"
+                         % (a.shape[1], a.shape[0], w, h))
+            # NEAREST for a binarised mask, or the resize would reinvent the soft
+            # edge the threshold was asked to remove.
+            a = cv2.resize(a, (w, h), interpolation=(
+                cv2.INTER_NEAREST if binary else cv2.INTER_LINEAR))
+        rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+        p = os.path.join(outdir, "%s_%03d.png" % (prefix, idx + 1))
+        cv2.imwrite(p, cv2.cvtColor(np.dstack([rgb, a]), cv2.COLOR_RGBA2BGRA))
+        paths.append(p)
+        if emit and (idx % 5 == 0 or idx + 1 == total):
+            emit("matte", (idx + 1) / float(total), "frame %d/%d" % (idx + 1, total))
+    return paths
+
+
 # --------------------------------------------------------------------------- #
 # stage: backdrop repair
 # --------------------------------------------------------------------------- #
@@ -841,7 +981,8 @@ def sidecar_dict(cfg, layout, video, n_frames, matte_note):
         "frame_count": layout["frame_count"],
         "fps": cfg["fps"],
         "crop": layout["crop"],
-        "matte": "vrmbg-3.0" if cfg["do_matte"] else "none",
+        "matte": ("mask video" if cfg.get("mask_video")
+                  else ("vrmbg-3.0" if cfg["do_matte"] else "none")),
         "matte_repair": ", ".join(
             ([("border flood-fill (black_max=%d)" % cfg["black_max"])
               if cfg["repair_border_only"]
@@ -1287,6 +1428,13 @@ def run_pipeline(cfg, workdir, emit=None, cancel=None, model_cache=None):
     video = cfg["video"]
     if not video or not os.path.exists(video):
         raise ValueError("video not found: %r" % video)
+    # Checked here rather than in the matte stage so a typo'd mask fails before
+    # the model is loaded, which is 2-3.5 s and ~845 MB of weights to pay for a
+    # missing file. The mask is not loaded at all when it is not used, and a
+    # blank path is not an error -- it is the default.
+    mask_video = cfg.get("mask_video") or ""
+    if mask_video and not os.path.exists(mask_video):
+        raise ValueError("mask video not found: %r" % mask_video)
 
     prefix = cfg["prefix"] or os.path.splitext(os.path.basename(video))[0]
     cfg["prefix"] = prefix
@@ -1297,7 +1445,12 @@ def run_pipeline(cfg, workdir, emit=None, cancel=None, model_cache=None):
       % (info["frames"], info["fps"], info["width"], info["height"]))
 
     frames_dir = os.path.join(workdir, "frames")
-    if cfg["do_matte"]:
+    if mask_video:
+        e("matte", 0.0, "mask video %s (VRMBG-3.0 not run)"
+          % os.path.basename(mask_video))
+        paths = matte_with_mask(video, mask_video, frames_dir, cfg,
+                                emit=e, cancel=cancel)
+    elif cfg["do_matte"]:
         model = None
         if model_cache is not None:
             key = (cfg["model_dir"], int(cfg["infer_size"]))
@@ -1381,6 +1534,19 @@ def run_pipeline(cfg, workdir, emit=None, cancel=None, model_cache=None):
     result = {"workdir": workdir, "prefix": prefix, "frames": paths,
               "layout": layout, "info": info, "bbox": bbox, "artifacts": {}}
 
+    # The sidecar's one-line account of where the alpha came from. Named in full
+    # -- which clip, and which of the two switches was on -- because a sheet
+    # whose alpha is a hand-made mask and a sheet whose alpha is the model look
+    # identical once they are packed, and the sidecar is the only place that
+    # difference can survive.
+    matte_note = "vrmbg-3.0 autoregressive"
+    if mask_video:
+        matte_note = ("mask video %s%s%s"
+                      % (os.path.basename(mask_video),
+                         ", inverted" if cfg["mask_invert"] else "",
+                         ", binarised at %d" % cfg["mask_threshold"]
+                         if cfg["mask_binary"] else ""))
+
     if cfg["want_sheet"]:
         sp = os.path.join(workdir, "%s_sheet.png" % prefix)
         cfg["_sheet"] = sp
@@ -1390,14 +1556,14 @@ def run_pipeline(cfg, workdir, emit=None, cancel=None, model_cache=None):
         cfg["_sheet"] = os.path.join(workdir, "%s_sheet.png" % prefix)
 
     if cfg["want_sidecar"]:
-        side = sidecar_dict(cfg, layout, video, n, "vrmbg-3.0 autoregressive")
+        side = sidecar_dict(cfg, layout, video, n, matte_note)
         jp = os.path.join(workdir, "%s.json" % prefix)
         with open(jp, "w", encoding="utf-8") as fh:
             json.dump(side, fh, indent=2)
         result["artifacts"]["sidecar"] = jp
         result["sidecar"] = side
     else:
-        side = sidecar_dict(cfg, layout, video, n, "vrmbg-3.0 autoregressive")
+        side = sidecar_dict(cfg, layout, video, n, matte_note)
         result["sidecar"] = side
 
     if cfg["want_preview"]:

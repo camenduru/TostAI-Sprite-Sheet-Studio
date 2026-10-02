@@ -403,12 +403,20 @@ def video(path: str = "", request: Request = None):
 
 
 @app.post("/api/upload")
-async def upload(req: Request, name: str = "input.mp4"):
+async def upload(req: Request, name: str = "input.mp4", sub: str = ""):
     safe = re.sub(r"[^A-Za-z0-9_.-]", "_", os.path.basename(name)) or "input.mp4"
+    # A mask clip is very often exported beside its source under a matching name
+    # (`clip.mp4` and `clip_mask.mp4`, or sometimes just `clip.mp4` twice), and
+    # both used to land in uploads/ -- so dropping the mask overwrote the source
+    # it belongs to, and the run then read a mask as its own video. The mask gets
+    # its own folder. `sub` arrives in a query string, so it is whitelisted
+    # rather than joined into a path.
+    folder = os.path.join(UPLOADS, "masks") if sub == "masks" else UPLOADS
     data = await req.body()
     if not data:
         return JSONResponse({"ok": False, "error": "empty upload"}, status_code=400)
-    dst = os.path.join(UPLOADS, safe)
+    os.makedirs(folder, exist_ok=True)
+    dst = os.path.join(folder, safe)
     with open(dst, "wb") as fh:
         fh.write(data)
     return {"ok": True, "path": dst, "bytes": len(data)}
